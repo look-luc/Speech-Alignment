@@ -7,7 +7,9 @@ authors = [
     { name = "look-luc", email = "denardiluc@gmail.com" }
 ]
 requires-python = ">=3.14"
-dependencies = []
+dependencies = [
+    "django>=6.1.2",
+]
 
 [project.scripts]
 speech-alignment = "speech_alignment:main"
