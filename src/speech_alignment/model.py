@@ -32,7 +32,7 @@ class Forced_Aligner:
         )
 
         self.data = get_data()
-        self.device = "cuda" if torch.cuda.is_available else "mps" if torch.backends.mps.is_available() else "cpu"
+        self.device = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
 
     def train(
         self,
@@ -54,24 +54,10 @@ class Forced_Aligner:
             batch_size=batch_size,
             shuffle=True,
         )
-        torch.optim.AdamW([
+        optimizer = torch.optim.AdamW([
             {"params": filter(lambda p: p.requires_grad, self.asr_model.parameters()), "lr": lr_asr},
             {"params": filter(lambda p: p.requires_grad, self.aligner_model.parameters()), "lr": lr_aligner}
         ], weight_decay=weight_decay)
-
-        def alignment_collate_fn(batch):
-            # Extract audio arrays and target text from the dataset batch items
-            audio_arrays = [item["audio"]["array"] for item in batch]
-            sampling_rates = [item["audio"]["sampling_rate"] for item in batch]
-
-            # Depending on the dataset, text keys might be "text", "sentence", or "transcript"
-            texts = [item.get("text") or item.get("sentence") or item.get("transcript") for item in batch]
-
-            return {
-                "audio_arrays": audio_arrays,
-                "sampling_rates": sampling_rates,
-                "texts": texts
-            }
 
         for epoch in range(num_epochs):
             self.aligner_model.train()
@@ -80,3 +66,24 @@ class Forced_Aligner:
                 audio_arrays = batches["audio_arrays"]
                 transcript_texts = batches["texts"]
                 sampling_rate = batches["sampling_rates"][0]
+
+                processed_inputs = self.aligner_processor(
+                    audios=audio_arrays,
+                    text=transcript_texts,
+                    sampling_rate=sampling_rate,
+                    padding=True,
+                    return_tensors="pt"
+                ).to(self.device)
+
+                outputs = self.aligner_model(
+                    input_ids=processed_inputs["input_ids"],
+                    attention_mask=processed_inputs["attention_mask"],
+                    input_features=processed_inputs["input_features"],
+                    labels=processed_inputs["labels"]
+                )
+
+                loss = outputs["loss"]
+
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()

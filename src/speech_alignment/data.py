@@ -58,7 +58,7 @@ def get_data():
         ).select_columns(
             ["audio", "transcript"]
         ).rename_column(
-            "transcript","text"
+            "transcript","texts"
         ) for lang in FACEBOOK_LANGS
     ]
     fb_test = [
@@ -69,7 +69,7 @@ def get_data():
         ).select_columns(
             ["audio", "transcript"]
         ).rename_column(
-            "transcript","text"
+            "transcript","texts"
         ) for lang in FACEBOOK_LANGS
     ]
 
@@ -85,7 +85,7 @@ def get_data():
         ).select_columns(
             ["audio","transcript"]
         ).rename_column(
-            "transcript", "text"
+            "transcript", "texts"
         )
         ds_test = load_dataset(
             "google/WaxalNLP",
@@ -94,7 +94,7 @@ def get_data():
         ).select_columns(
             ["audio","transcript"]
         ).rename_column(
-            "transcript", "text"
+            "transcript", "texts"
         )
 
         if "audio" in ds_train.features:
@@ -116,7 +116,7 @@ def get_data():
         ).select_columns(
             ["audio","transcript"]
         ).rename_column(
-            "transcript", "text"
+            "transcript", "texts"
         ) for code in FLEURS_LOW_MED.values()
     ]
     fleurs_test = [
@@ -127,7 +127,7 @@ def get_data():
         ).select_columns(
             ["audio","transcript"]
         ).rename_column(
-            "transcript", "text"
+            "transcript", "texts"
         ) for code in FLEURS_LOW_MED.values()
     ]
 
