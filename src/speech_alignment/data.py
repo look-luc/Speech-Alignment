@@ -50,16 +50,52 @@ FLEURS_LOW_MED = {
 }
 
 def get_data():
-    fb_train = [load_dataset("facebook/multilingual_librispeech", lang, split="train") for lang in FACEBOOK_LANGS]
-    fb_test = [load_dataset("facebook/multilingual_librispeech", lang, split="test") for lang in FACEBOOK_LANGS]
+    fb_train = [
+        load_dataset(
+            "facebook/multilingual_librispeech",
+            lang,
+            split="train"
+        ).select_columns(
+            ["audio", "transcript"]
+        ).rename_column(
+            "transcript","text"
+        ) for lang in FACEBOOK_LANGS
+    ]
+    fb_test = [
+        load_dataset(
+            "facebook/multilingual_librispeech",
+            lang,
+            split="test"
+        ).select_columns(
+            ["audio", "transcript"]
+        ).rename_column(
+            "transcript","text"
+        ) for lang in FACEBOOK_LANGS
+    ]
 
     facebook_concat_ds_train = concatenate_datasets(fb_train)
     facebook_concat_ds_test = concatenate_datasets(fb_test)
 
     waxal_train, waxal_test = [], []
     for code in WAXAL_LANG_CODE.values():
-        ds_train = load_dataset("google/WaxalNLP", f"{code}_asr", split="train")
-        ds_test = load_dataset("google/WaxalNLP", f"{code}_asr", split="test")
+        ds_train = load_dataset(
+            "google/WaxalNLP",
+            f"{code}_asr",
+            split="train"
+        ).select_columns(
+            ["audio","transcript"]
+        ).rename_column(
+            "transcript", "text"
+        )
+        ds_test = load_dataset(
+            "google/WaxalNLP",
+            f"{code}_asr",
+            split="test"
+        ).select_columns(
+            ["audio","transcript"]
+        ).rename_column(
+            "transcript", "text"
+        )
 
         if "audio" in ds_train.features:
             ds_train = ds_train.cast_column("audio", Audio(decode=False))
@@ -72,8 +108,28 @@ def get_data():
     waxal_ds_train = concatenate_datasets(waxal_train)
     waxal_ds_test = concatenate_datasets(waxal_test)
 
-    fleurs_train = [load_dataset("google/fleurs", code, split="train") for code in FLEURS_LOW_MED.values()]
-    fleurs_test = [load_dataset("google/fleurs", code, split="test") for code in FLEURS_LOW_MED.values()]
+    fleurs_train = [
+        load_dataset(
+            "google/fleurs",
+            code,
+            split="train"
+        ).select_columns(
+            ["audio","transcript"]
+        ).rename_column(
+            "transcript", "text"
+        ) for code in FLEURS_LOW_MED.values()
+    ]
+    fleurs_test = [
+        load_dataset(
+            "google/fleurs",
+            code,
+            split="test"
+        ).select_columns(
+            ["audio","transcript"]
+        ).rename_column(
+            "transcript", "text"
+        ) for code in FLEURS_LOW_MED.values()
+    ]
 
     fleurs_concat_ds_train = concatenate_datasets(fleurs_train)
     fleurs_concat_ds_test = concatenate_datasets(fleurs_test)
