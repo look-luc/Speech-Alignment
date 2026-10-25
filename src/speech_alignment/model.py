@@ -49,7 +49,8 @@ class Forced_Aligner:
         lr_asr:int|float=2e-5,
         lr_aligner:int|float=5e-5,
         weight_decay:float=0.01,
-        num_epochs:int=2
+        num_epochs:int=2,
+        output_dir: str = "./multiling_forced_aligner_model"
     ):
         train_splits = [
             self.data["facebook"][0],
@@ -128,6 +129,10 @@ class Forced_Aligner:
             print(message)
             print("="*len(message))
 
+        print(f"Saving fine-tuned aligner model and processor to {output_dir}...")
+        self.aligner_model.save_pretrained(output_dir)
+        self.aligner_processor.save_pretrained(output_dir)
+        print("Model and processor saved successfully!")
         return self.aligner_model
 
     def collate_fn(self, batch):
