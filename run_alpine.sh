@@ -28,6 +28,7 @@ export SCRATCH="${SCRATCH:-/scratch/alpine/$USER}"
 export HF_HOME="$SCRATCH/.cache/huggingface"
 export EVALUATE_CACHE_DIR="$SCRATCH/.cache/evaluate"
 export TRANSFORMERS_CACHE="$SCRATCH/.cache/transformers"
+export LD_LIBRARY_PATH=$CONDA_PREFIX/lib:$LD_LIBRARY_PATH
 
 mkdir -p "$HF_HOME" "$EVALUATE_CACHE_DIR" "$TRANSFORMERS_CACHE"
 

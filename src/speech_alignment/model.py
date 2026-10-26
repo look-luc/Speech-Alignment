@@ -54,18 +54,19 @@ class Forced_Aligner:
         combined_train_data = concatenate_datasets(train_splits)
         combined_test_data = concatenate_datasets(test_splits)
 
-        # NOTE: shuffle=False is mandatory when using streaming IterableDatasets
         train_loader = DataLoader(
             combined_train_data,
             batch_size=batch_size,
             shuffle=False,
-            collate_fn=self.collate_fn
+            collate_fn=self.collate_fn,
+            num_workers=0
         )
         test_loader = DataLoader(
             combined_test_data,
             batch_size=batch_size,
             shuffle=False,
-            collate_fn=self.collate_fn
+            collate_fn=self.collate_fn,
+            num_workers=0
         )
 
         optimizer = optim.AdamW(
@@ -85,22 +86,26 @@ class Forced_Aligner:
 
             for batch in train_loader:
                 audio_arrays = batch["audio_arrays"]
-                transcript_texts = batch["texts"]
                 sampling_rate = batch["sampling_rate"]
+                transcript_texts = batch["texts"]
 
                 processed_inputs = self.aligner_processor(
-                    audios=audio_arrays,
-                    text=transcript_texts,
+                    audio=audio_arrays,
                     sampling_rate=sampling_rate,
+                    text=transcript_texts,
+                    return_tensors="pt",
                     padding=True,
-                    return_tensors="pt"
                 ).to(self.device)
 
+                # Construct labels from input_ids and mask padding tokens with -100
+                labels = processed_inputs["input_ids"].clone()
+                pad_token_id = getattr(self.aligner_processor.tokenizer, "pad_token_id", -100)
+                labels[labels == pad_token_id] = -100
+
+                # Unpack all processed inputs (including input_features_mask) directly
                 outputs = self.aligner_model(
-                    input_ids=processed_inputs["input_ids"],
-                    attention_mask=processed_inputs["attention_mask"],
-                    input_features=processed_inputs["input_features"],
-                    labels=processed_inputs["labels"]
+                    **processed_inputs,
+                    labels=labels
                 )
 
                 loss = outputs["loss"]
@@ -149,22 +154,24 @@ class Forced_Aligner:
         with torch.no_grad():
             for batch in test_loader:
                 audio_arrays = batch["audio_arrays"]
-                transcript_texts = batch["texts"]
                 sampling_rate = batch["sampling_rate"]
+                transcript_texts = batch["texts"]
 
                 processed_inputs = self.aligner_processor(
-                    audios=audio_arrays,
-                    text=transcript_texts,
+                    audio=audio_arrays,
                     sampling_rate=sampling_rate,
+                    text=transcript_texts,
                     padding=True,
                     return_tensors="pt"
                 ).to(self.device)
 
+                labels = processed_inputs["input_ids"].clone()
+                pad_token_id = getattr(self.aligner_processor.tokenizer, "pad_token_id", -100)
+                labels[labels == pad_token_id] = -100
+
                 outputs = self.aligner_model(
-                    input_ids=processed_inputs["input_ids"],
-                    attention_mask=processed_inputs["attention_mask"],
-                    input_features=processed_inputs["input_features"],
-                    labels=processed_inputs["labels"]
+                    **processed_inputs,
+                    labels=labels
                 )
 
                 total_loss += outputs["loss"].item()
@@ -172,9 +179,9 @@ class Forced_Aligner:
 
                 logits = outputs["logits"]
                 preds = torch.argmax(logits, dim=-1).flatten().tolist()
-                labels = processed_inputs["labels"].flatten().tolist()
+                eval_labels = labels.flatten().tolist()
 
-                for p, l in zip(preds, labels):
+                for p, l in zip(preds, eval_labels):
                     if l != -100:
                         all_preds.append(p)
                         all_labels.append(l)
