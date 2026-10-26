@@ -2,6 +2,8 @@ import itertools
 
 import evaluate
 import torch
+import torchaudio
+import torchaudio.functional as F
 from torch.utils.data import DataLoader, IterableDataset
 from transformers import (
     AutoModelForTokenClassification,
@@ -60,7 +62,7 @@ class Forced_Aligner:
             batch_size=batch_size,
             shuffle=False,
             collate_fn=self.collate_fn,
-            num_workers=0
+            num_workers=1
         )
 
         optimizer = torch.optim.AdamW(self.aligner_model.parameters(), lr=learning_rate)
@@ -123,7 +125,7 @@ class Forced_Aligner:
             batch_size=batch_size,
             shuffle=False,
             collate_fn=self.collate_fn,
-            num_workers=0
+            num_workers=1
         )
 
         bleu_metric = evaluate.load("sacrebleu")
@@ -200,8 +202,18 @@ class Forced_Aligner:
         return alignment_results
 
     def collate_fn(self, batch):
-        audio_arrays = [item["audio"]["array"] for item in batch]
-        sampling_rate = 16000
+        audio_arrays = []
+        target_sr = 16000
+
+        for item in batch:
+            arr = torch.tensor(item["audio"]["array"], dtype=torch.float32)
+            orig_sr = item["audio"].get("sampling_rate", target_sr)
+
+            # Resample on-the-fly if sample rates differ
+            if orig_sr != target_sr:
+                arr = F.resample(arr, orig_freq=orig_sr, new_freq=target_sr)
+
+            audio_arrays.append(arr.numpy())
 
         texts = [
             self.aligner_processor.apply_chat_template(
@@ -216,7 +228,7 @@ class Forced_Aligner:
 
         return {
             "audio_arrays": audio_arrays,
-            "sampling_rate": sampling_rate,
+            "sampling_rate": target_sr,
             "texts": texts,
             "raw_texts": raw_texts
         }

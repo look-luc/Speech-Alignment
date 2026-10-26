@@ -18,6 +18,7 @@ dependencies = [
     "scikit-learn>=1.9.1",
     "soundfile>=0.14.0",
     "torch>=2.14.1",
+    "torchaudio>=2.11.0",
     "torchcodec>=0.17.0",
     "transformers>=5.20.2",
 ]

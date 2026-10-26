@@ -1,4 +1,4 @@
-from datasets import Audio, load_dataset
+from datasets import Audio, Features, Value, load_dataset
 
 FACEBOOK_LANGS = [
     "dutch",
@@ -80,14 +80,25 @@ def get_data():
         ) for lang in FACEBOOK_LANGS
     ]
 
-    # 2. WaxalNLP
+    # 2. WaxalNLP (Explicitly define features including __index_level_0__ to prevent CastError)
+    waxal_features = Features({
+        "id": Value("string"),
+        "speaker_id": Value("string"),
+        "transcription": Value("string"),
+        "language": Value("string"),
+        "gender": Value("string"),
+        "audio": Audio(),
+        "__index_level_0__": Value("int64"),
+    })
+
     waxal_train, waxal_test = [], []
     for code in WAXAL_LANG_CODE.values():
         ds_train = load_dataset(
             "google/WaxalNLP",
             f"{code}_asr",
             split="train",
-            streaming=True
+            streaming=True,
+            features=waxal_features
         ).select_columns(
             ["audio", "transcription"]
         ).rename_column(
@@ -100,7 +111,8 @@ def get_data():
             "google/WaxalNLP",
             f"{code}_asr",
             split="test",
-            streaming=True
+            streaming=True,
+            features=waxal_features
         ).select_columns(
             ["audio", "transcription"]
         ).rename_column(
