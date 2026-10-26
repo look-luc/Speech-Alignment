@@ -10,7 +10,7 @@ def main():
     args = parser.parse_args()
     if args:
         model = Forced_Aligner()
-        final_model = model.train()
+        final_model = model.evaluate_pipeline()
 
 if __name__ == "__main__":
     main()
