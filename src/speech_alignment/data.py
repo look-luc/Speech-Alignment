@@ -1,4 +1,4 @@
-from datasets import concatenate_datasets, load_dataset
+from datasets import Audio, concatenate_datasets, load_dataset
 
 FACEBOOK_LANGS = [
     "dutch",
@@ -50,6 +50,7 @@ FLEURS_LOW_MED = {
 }
 
 def get_data():
+    # 1. Multilingual LibriSpeech
     fb_train = [
         load_dataset(
             "facebook/multilingual_librispeech",
@@ -60,6 +61,8 @@ def get_data():
             ["audio", "transcript"]
         ).rename_column(
             "transcript", "texts"
+        ).cast_column(
+            "audio", Audio(sampling_rate=16000)
         ) for lang in FACEBOOK_LANGS
     ]
     fb_test = [
@@ -72,12 +75,15 @@ def get_data():
             ["audio", "transcript"]
         ).rename_column(
             "transcript", "texts"
+        ).cast_column(
+            "audio", Audio(sampling_rate=16000)
         ) for lang in FACEBOOK_LANGS
     ]
 
     facebook_concat_ds_train = concatenate_datasets(fb_train)
     facebook_concat_ds_test = concatenate_datasets(fb_test)
 
+    # 2. WaxalNLP
     waxal_train, waxal_test = [], []
     for code in WAXAL_LANG_CODE.values():
         ds_train = load_dataset(
@@ -86,19 +92,24 @@ def get_data():
             split="train",
             streaming=True
         ).select_columns(
-            ["audio", "transcript"]
+            ["audio", "transcription"]
         ).rename_column(
-            "transcript", "texts"
+            "transcription", "texts"
+        ).cast_column(
+            "audio", Audio(sampling_rate=16000)
         )
+
         ds_test = load_dataset(
             "google/WaxalNLP",
             f"{code}_asr",
             split="test",
             streaming=True
         ).select_columns(
-            ["audio", "transcript"]
+            ["audio", "transcription"]
         ).rename_column(
-            "transcript", "texts"
+            "transcription", "texts"
+        ).cast_column(
+            "audio", Audio(sampling_rate=16000)
         )
 
         waxal_train.append(ds_train)
@@ -107,6 +118,7 @@ def get_data():
     waxal_ds_train = concatenate_datasets(waxal_train)
     waxal_ds_test = concatenate_datasets(waxal_test)
 
+    # 3. Google FLEURS
     fleurs_train = [
         load_dataset(
             "google/fleurs",
@@ -114,9 +126,11 @@ def get_data():
             split="train",
             streaming=True
         ).select_columns(
-            ["audio", "transcript"]
+            ["audio", "transcription"]
         ).rename_column(
-            "transcript", "texts"
+            "transcription", "texts"
+        ).cast_column(
+            "audio", Audio(sampling_rate=16000)
         ) for code in FLEURS_LOW_MED.values()
     ]
     fleurs_test = [
@@ -126,9 +140,11 @@ def get_data():
             split="test",
             streaming=True
         ).select_columns(
-            ["audio", "transcript"]
+            ["audio", "transcription"]
         ).rename_column(
-            "transcript", "texts"
+            "transcription", "texts"
+        ).cast_column(
+            "audio", Audio(sampling_rate=16000)
         ) for code in FLEURS_LOW_MED.values()
     ]
 
