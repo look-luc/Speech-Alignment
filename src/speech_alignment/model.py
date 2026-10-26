@@ -3,6 +3,7 @@ import itertools
 import evaluate
 import torch
 import torchaudio.functional as F
+from datasets import interleave_datasets
 from torch.utils.data import DataLoader, IterableDataset
 from transformers import (
     AutoModelForTokenClassification,
@@ -54,7 +55,23 @@ class Forced_Aligner:
             self.data["fleurs"][0]
         )
 
-        combined_train_data = ChainedIterableDataset(train_splits)
+        # Interleave streaming datasets uniformly without needing a buffer
+        combined_train_data = interleave_datasets(
+            train_splits,
+            seed=42,
+            stopping_strategy="first_exhausted"
+        )
+
+        train_loader = DataLoader(
+            combined_train_data,
+            batch_size=batch_size,
+            shuffle=False,
+            collate_fn=self.collate_fn,
+            num_workers=0
+        )
+
+        optimizer = torch.optim.AdamW(self.aligner_model.parameters(), lr=learning_rate)
+        self.aligner_model.train()
 
         train_loader = DataLoader(
             combined_train_data,

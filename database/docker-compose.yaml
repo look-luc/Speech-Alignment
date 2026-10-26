@@ -7,9 +7,9 @@ services:
     environment:
       POSTGRES_USER: lucdenardi
       POSTGRES_PASSWORD: my_secret_password
-      POSTGRES_DB: my_database
+      POSTGRES_DB: forced-aligner-proj
     ports:
-      - "5433:5432" # Maps port 5433 on your Mac to port 5432 in the container
+      - "5432:5433" # Maps port 5433 on your Mac to port 5432 in the container
     volumes:
       - postgres_data:/var/lib/postgresql/data
     restart: always
