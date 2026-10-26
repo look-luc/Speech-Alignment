@@ -97,12 +97,17 @@ class Forced_Aligner:
                     padding=True,
                 ).to(self.device)
 
+                model_dtype = self.aligner_model.dtype
+                processed_inputs = {
+                    k: v.to(dtype=model_dtype) if v.is_floating_point() else v
+                    for k, v in processed_inputs.items()
+                }
+
                 # Construct labels from input_ids and mask padding tokens with -100
                 labels = processed_inputs["input_ids"].clone()
                 pad_token_id = getattr(self.aligner_processor.tokenizer, "pad_token_id", -100)
                 labels[labels == pad_token_id] = -100
 
-                # Unpack all processed inputs (including input_features_mask) directly
                 outputs = self.aligner_model(
                     **processed_inputs,
                     labels=labels
@@ -135,7 +140,16 @@ class Forced_Aligner:
     def collate_fn(self, batch):
         audio_arrays = [item["audio"]["array"] for item in batch]
         sampling_rate = batch[0]["audio"]["sampling_rate"] if "audio" in batch[0] else 16000
-        texts = [item["texts"] for item in batch]
+
+        texts = [
+            self.aligner_processor.apply_chat_template(
+                [{"role": "user", "content": [{"type": "audio"}, {"type": "text", "text": item["texts"]}]}],
+                tokenize=False,
+                add_generation_prompt=False
+            )
+            for item in batch
+        ]
+
         return {
             "audio_arrays": audio_arrays,
             "sampling_rate": sampling_rate,
@@ -144,6 +158,7 @@ class Forced_Aligner:
 
     def _evaluate(self, test_loader, accuracy_metric, f1_metric, bleu_metric):
         self.aligner_model.eval()
+        model_dtype = self.aligner_model.dtype
         total_loss = 0.0
         step_count = 0
         all_preds = []
@@ -164,6 +179,11 @@ class Forced_Aligner:
                     padding=True,
                     return_tensors="pt"
                 ).to(self.device)
+
+                processed_inputs = {
+                    k: v.to(dtype=model_dtype) if v.is_floating_point() else v
+                    for k, v in processed_inputs.items()
+                }
 
                 labels = processed_inputs["input_ids"].clone()
                 pad_token_id = getattr(self.aligner_processor.tokenizer, "pad_token_id", -100)
