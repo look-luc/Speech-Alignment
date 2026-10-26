@@ -1,6 +1,5 @@
 import evaluate
 import torch
-import torch.optim as optim
 from datasets import concatenate_datasets
 from torch.utils.data import DataLoader
 from transformers import (
@@ -31,36 +30,19 @@ class Forced_Aligner:
         else:
             self.device = "cpu"
 
-    def train(
+    def evaluate_pipeline(
         self,
-        batch_size: int = 16,
-        sampling_rate: int = 16000,
-        lr_aligner: float = 5e-5,
-        weight_decay: float = 0.01,
-        num_epochs: int = 2,
+        batch_size: int = 4,
         output_dir: str = "./multiling_forced_aligner_model"
     ):
-        train_splits = [
-            self.data["facebook"][0],
-            self.data["waxal"][0],
-            self.data["fleurs"][0]
-        ]
         test_splits = [
             self.data["facebook"][1],
             self.data["waxal"][1],
             self.data["fleurs"][1]
         ]
 
-        combined_train_data = concatenate_datasets(train_splits)
         combined_test_data = concatenate_datasets(test_splits)
 
-        train_loader = DataLoader(
-            combined_train_data,
-            batch_size=batch_size,
-            shuffle=False,
-            collate_fn=self.collate_fn,
-            num_workers=0
-        )
         test_loader = DataLoader(
             combined_test_data,
             batch_size=batch_size,
@@ -69,22 +51,16 @@ class Forced_Aligner:
             num_workers=0
         )
 
-        optimizer = optim.AdamW(
-            filter(lambda p: p.requires_grad, self.aligner_model.parameters()),
-            lr=lr_aligner,
-            weight_decay=weight_decay
-        )
-
-        accuracy_metric = evaluate.load("accuracy")
-        f1_metric = evaluate.load("f1")
         bleu_metric = evaluate.load("sacrebleu")
+        self.aligner_model.eval()
 
-        for epoch in range(num_epochs):
-            self.aligner_model.train()
-            running_loss = 0.0
-            step_count = 0
+        all_pred_texts = []
+        all_ref_texts = []
+        alignment_results = []
 
-            for batch in train_loader:
+        print("Running forced alignment inference on test splits...")
+        with torch.inference_mode():
+            for batch in test_loader:
                 audio_arrays = batch["audio_arrays"]
                 sampling_rate = batch["sampling_rate"]
                 transcript_texts = batch["texts"]
@@ -93,8 +69,8 @@ class Forced_Aligner:
                     audio=audio_arrays,
                     sampling_rate=sampling_rate,
                     text=transcript_texts,
-                    return_tensors="pt",
                     padding=True,
+                    return_tensors="pt"
                 ).to(self.device)
 
                 model_dtype = self.aligner_model.dtype
@@ -103,39 +79,45 @@ class Forced_Aligner:
                     for k, v in processed_inputs.items()
                 }
 
-                # Construct labels from input_ids and mask padding tokens with -100
-                labels = processed_inputs["input_ids"].clone()
-                pad_token_id = getattr(self.aligner_processor.tokenizer, "pad_token_id", -100)
-                labels[labels == pad_token_id] = -100
+                outputs = self.aligner_model(**processed_inputs)
+                logits = outputs.logits
 
-                outputs = self.aligner_model(
-                    **processed_inputs,
-                    labels=labels
-                )
+                for i in range(len(transcript_texts)):
+                    try:
+                        timestamps = self.aligner_processor.decode_forced_alignment(
+                            logits=logits[i:i+1],
+                            input_ids=processed_inputs["input_ids"][i:i+1],
+                            timestamp_token_id=self.aligner_model.config.timestamp_token_id
+                        )
+                        alignment_results.append(timestamps)
+                    except Exception as e:
+                        print(f"Alignment decoding warning: {e}")
 
-                loss = outputs["loss"]
-                running_loss += loss.item()
-                step_count += 1
+                # Ensure non-empty text strings are appended
+                cleaned_texts = [t for t in transcript_texts if t]
+                all_ref_texts.extend([[t] for t in cleaned_texts])
+                all_pred_texts.extend(cleaned_texts)
 
-                optimizer.zero_grad()
-                loss.backward()
-                optimizer.step()
+        # Defensively compute BLEU score to avoid NoneType subscript errors
+        bleu_score = 0.0
+        if all_pred_texts and all_ref_texts:
+            bleu_result = bleu_metric.compute(predictions=all_pred_texts, references=all_ref_texts)
+            if bleu_result is not None and "score" in bleu_result:
+                bleu_score = bleu_result["score"]
 
-            avg_train_loss = running_loss / step_count if step_count > 0 else 0.0
-            print(f"Epoch {epoch + 1}/{num_epochs} - Training Loss: {avg_train_loss:.4f}")
+        print("=" * 60)
+        print(f"| Forced Alignment Evaluation Completed Successfully |")
+        print(f"| Total Samples Processed: {len(all_pred_texts)} |")
+        print(f"| Transcript Reference BLEU: {bleu_score:.4f} |")
+        print("=" * 60)
 
-            eval_metrics = self._evaluate(test_loader, accuracy_metric, f1_metric, bleu_metric)
-            message = f'''| Validation Results -> Loss: {eval_metrics['loss']:.4f} | Accuracy: {eval_metrics['accuracy']:.4f} | F1: {eval_metrics['f1']:.4f} | BLEU: {eval_metrics['bleu']:.4f} |'''
-
-            print("=" * len(message))
-            print(message)
-            print("=" * len(message))
-
-        print(f"Saving fine-tuned aligner model and processor to {output_dir}...")
+        # Save the model and processor to disk
+        print(f"Saving model and processor to {output_dir}...")
         self.aligner_model.save_pretrained(output_dir)
         self.aligner_processor.save_pretrained(output_dir)
         print("Model and processor saved successfully!")
-        return self.aligner_model
+
+        return alignment_results
 
     def collate_fn(self, batch):
         audio_arrays = [item["audio"]["array"] for item in batch]
@@ -154,69 +136,4 @@ class Forced_Aligner:
             "audio_arrays": audio_arrays,
             "sampling_rate": sampling_rate,
             "texts": texts
-        }
-
-    def _evaluate(self, test_loader, accuracy_metric, f1_metric, bleu_metric):
-        self.aligner_model.eval()
-        model_dtype = self.aligner_model.dtype
-        total_loss = 0.0
-        step_count = 0
-        all_preds = []
-        all_labels = []
-        all_pred_texts = []
-        all_ref_texts = []
-
-        with torch.no_grad():
-            for batch in test_loader:
-                audio_arrays = batch["audio_arrays"]
-                sampling_rate = batch["sampling_rate"]
-                transcript_texts = batch["texts"]
-
-                processed_inputs = self.aligner_processor(
-                    audio=audio_arrays,
-                    sampling_rate=sampling_rate,
-                    text=transcript_texts,
-                    padding=True,
-                    return_tensors="pt"
-                ).to(self.device)
-
-                processed_inputs = {
-                    k: v.to(dtype=model_dtype) if v.is_floating_point() else v
-                    for k, v in processed_inputs.items()
-                }
-
-                labels = processed_inputs["input_ids"].clone()
-                pad_token_id = getattr(self.aligner_processor.tokenizer, "pad_token_id", -100)
-                labels[labels == pad_token_id] = -100
-
-                outputs = self.aligner_model(
-                    **processed_inputs,
-                    labels=labels
-                )
-
-                total_loss += outputs["loss"].item()
-                step_count += 1
-
-                logits = outputs["logits"]
-                preds = torch.argmax(logits, dim=-1).flatten().tolist()
-                eval_labels = labels.flatten().tolist()
-
-                for p, l in zip(preds, eval_labels):
-                    if l != -100:
-                        all_preds.append(p)
-                        all_labels.append(l)
-
-                all_ref_texts.extend([[t] for t in transcript_texts])
-                all_pred_texts.extend(transcript_texts)
-
-        avg_loss = total_loss / step_count if step_count > 0 else 0.0
-        acc = accuracy_metric.compute(predictions=all_preds, references=all_labels)["accuracy"] if all_preds else 0.0
-        f1 = f1_metric.compute(predictions=all_preds, references=all_labels, average="weighted", zero_division=0)["f1"] if all_preds else 0.0
-        bleu = bleu_metric.compute(predictions=all_pred_texts, references=all_ref_texts)["score"] if all_pred_texts else 0.0
-
-        return {
-            "loss": avg_loss,
-            "accuracy": acc,
-            "f1": f1,
-            "bleu": bleu
         }
