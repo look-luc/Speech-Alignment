@@ -59,9 +59,9 @@ class Forced_Aligner:
         train_loader = DataLoader(
             combined_train_data,
             batch_size=batch_size,
-            shuffle=False,
+            shuffle=True,
             collate_fn=self.collate_fn,
-            num_workers=1
+            num_workers=0
         )
 
         optimizer = torch.optim.AdamW(self.aligner_model.parameters(), lr=learning_rate)
@@ -70,7 +70,9 @@ class Forced_Aligner:
         print("Starting training / fine-tuning pipeline...")
         for epoch in range(num_epochs):
             total_loss = 0.0
+            print(f"Initializing data loader iterator for Epoch {epoch+1}...") # Added debug print
             for step, batch in enumerate(train_loader):
+                print(f"Successfully fetched batch {step}")
                 audio_arrays = batch["audio_arrays"]
                 sampling_rate = batch["sampling_rate"]
                 transcript_texts = batch["texts"]
