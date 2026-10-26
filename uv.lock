@@ -2462,6 +2462,7 @@ dependencies = [
     { name = "sacrebleu" },
     { name = "scikit-learn" },
     { name = "soundfile" },
+    { name = "textgrid" },
     { name = "torch" },
     { name = "torchaudio" },
     { name = "torchcodec" },
@@ -2479,6 +2480,7 @@ requires-dist = [
     { name = "sacrebleu", specifier = ">=2.6.0" },
     { name = "scikit-learn", specifier = ">=1.9.1" },
     { name = "soundfile", specifier = ">=0.14.0" },
+    { name = "textgrid", specifier = ">=1.6.1" },
     { name = "torch", specifier = ">=2.14.1" },
     { name = "torchaudio", specifier = ">=2.11.0" },
     { name = "torchcodec", specifier = ">=0.17.0" },
@@ -2514,6 +2516,12 @@ sdist = { url = "https://files.pythonhosted.org/packages/46/58/8c37dea7bbf769b20
 wheels = [
     { url = "https://files.pythonhosted.org/packages/99/55/db07de81b5c630da5cbf5c7df646580ca26dfaefa593667fc6f2fe016d2e/tabulate-0.10.0-py3-none-any.whl", hash = "sha256:f0b0622e567335c8fabaaa659f1b33bcb6ddfe2e496071b743aa113f8774f2d3", size = 39814, upload-time = "2026-03-04T18:55:31.284Z" },
 ]
+
+[[package]]
+name = "textgrid"
+version = "1.6.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/cf/6f/701ef6aa56cf85c8965b7ff929f0766e0e8311c4478937eeee9441bf9663/TextGrid-1.6.1.tar.gz", hash = "sha256:0d3f8d4f511474777ce287d2ecef090573c0e63141aa73c6f400637e1ecaca63", size = 9422, upload-time = "2024-02-29T19:32:14.729Z" }
 
 [[package]]
 name = "threadpoolctl"
