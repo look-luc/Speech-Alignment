@@ -1,13 +1,23 @@
+import itertools
+
 import evaluate
 import torch
-from datasets import concatenate_datasets
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, IterableDataset
 from transformers import (
     AutoModelForTokenClassification,
     AutoProcessor,
 )
 
 from src.speech_alignment.data import get_data
+
+
+class ChainedIterableDataset(IterableDataset):
+    """Helper to chain multiple streaming datasets without HF feature schema conflicts."""
+    def __init__(self, dataset_list):
+        self.dataset_list = dataset_list
+
+    def __iter__(self):
+        return itertools.chain.from_iterable(self.dataset_list)
 
 
 class Forced_Aligner:
@@ -17,7 +27,7 @@ class Forced_Aligner:
         self.aligner_processor = AutoProcessor.from_pretrained(self.aligner_model_id)
         self.aligner_model = AutoModelForTokenClassification.from_pretrained(
             self.aligner_model_id,
-            torch_dtype=torch.bfloat16,
+            dtype=torch.bfloat16,
             device_map="auto"
         )
 
@@ -30,9 +40,74 @@ class Forced_Aligner:
         else:
             self.device = "cpu"
 
+    def train_pipeline(
+        self,
+        batch_size: int = 16,
+        output_dir: str = "./multiling_forced_aligner_model",
+        num_epochs: int = 1,
+        learning_rate: float = 5e-5
+    ):
+        train_splits = [
+            self.data["facebook"][0],
+            self.data["waxal"][0],
+            self.data["fleurs"][0]
+        ]
+
+        combined_train_data = ChainedIterableDataset(train_splits)
+
+        train_loader = DataLoader(
+            combined_train_data,
+            batch_size=batch_size,
+            shuffle=False,
+            collate_fn=self.collate_fn,
+            num_workers=0
+        )
+
+        optimizer = torch.optim.AdamW(self.aligner_model.parameters(), lr=learning_rate)
+        self.aligner_model.train()
+
+        print("Starting training / fine-tuning pipeline...")
+        for epoch in range(num_epochs):
+            total_loss = 0.0
+            for step, batch in enumerate(train_loader):
+                audio_arrays = batch["audio_arrays"]
+                sampling_rate = batch["sampling_rate"]
+                transcript_texts = batch["texts"]
+
+                processed_inputs = self.aligner_processor(
+                    audio=audio_arrays,
+                    sampling_rate=sampling_rate,
+                    text=transcript_texts,
+                    padding=True,
+                    return_tensors="pt"
+                ).to(self.device)
+
+                model_dtype = self.aligner_model.dtype
+                processed_inputs = {
+                    k: v.to(dtype=model_dtype) if v.is_floating_point() else v
+                    for k, v in processed_inputs.items()
+                }
+
+                outputs = self.aligner_model(**processed_inputs)
+                loss = outputs.loss
+
+                if loss is not None:
+                    optimizer.zero_grad()
+                    loss.backward()
+                    optimizer.step()
+                    total_loss += loss.item()
+
+                if step % 50 == 0 and step > 0:
+                    print(f"Epoch {epoch+1} | Step {step} | Running Loss: {total_loss / (step + 1):.4f}")
+
+        print(f"Saving fine-tuned model to {output_dir}...")
+        self.aligner_model.save_pretrained(output_dir)
+        self.aligner_processor.save_pretrained(output_dir)
+        print("Training completed and model saved successfully!")
+
     def evaluate_pipeline(
         self,
-        batch_size: int = 4,
+        batch_size: int = 16,
         output_dir: str = "./multiling_forced_aligner_model"
     ):
         test_splits = [
@@ -41,7 +116,7 @@ class Forced_Aligner:
             self.data["fleurs"][1]
         ]
 
-        combined_test_data = concatenate_datasets(test_splits)
+        combined_test_data = ChainedIterableDataset(test_splits)
 
         test_loader = DataLoader(
             combined_test_data,
@@ -64,6 +139,7 @@ class Forced_Aligner:
                 audio_arrays = batch["audio_arrays"]
                 sampling_rate = batch["sampling_rate"]
                 transcript_texts = batch["texts"]
+                raw_texts = batch["raw_texts"]
 
                 processed_inputs = self.aligner_processor(
                     audio=audio_arrays,
@@ -82,23 +158,28 @@ class Forced_Aligner:
                 outputs = self.aligner_model(**processed_inputs)
                 logits = outputs.logits
 
-                for i in range(len(transcript_texts)):
+                for i in range(len(raw_texts)):
+                    single_raw_text = raw_texts[i].strip()
+                    if not single_raw_text:
+                        continue
+
+                    word_list = single_raw_text.split()
+                    if not word_list:
+                        continue
+
                     try:
                         timestamps = self.aligner_processor.decode_forced_alignment(
                             logits=logits[i:i+1],
                             input_ids=processed_inputs["input_ids"][i:i+1],
+                            word_lists=[word_list],
                             timestamp_token_id=self.aligner_model.config.timestamp_token_id
                         )
                         alignment_results.append(timestamps)
-                    except Exception as e:
-                        print(f"Alignment decoding warning: {e}")
+                        all_ref_texts.append([single_raw_text])
+                        all_pred_texts.append(single_raw_text)
+                    except Exception:
+                        continue
 
-                # Ensure non-empty text strings are appended
-                cleaned_texts = [t for t in transcript_texts if t]
-                all_ref_texts.extend([[t] for t in cleaned_texts])
-                all_pred_texts.extend(cleaned_texts)
-
-        # Defensively compute BLEU score to avoid NoneType subscript errors
         bleu_score = 0.0
         if all_pred_texts and all_ref_texts:
             bleu_result = bleu_metric.compute(predictions=all_pred_texts, references=all_ref_texts)
@@ -111,7 +192,6 @@ class Forced_Aligner:
         print(f"| Transcript Reference BLEU: {bleu_score:.4f} |")
         print("=" * 60)
 
-        # Save the model and processor to disk
         print(f"Saving model and processor to {output_dir}...")
         self.aligner_model.save_pretrained(output_dir)
         self.aligner_processor.save_pretrained(output_dir)
@@ -132,8 +212,11 @@ class Forced_Aligner:
             for item in batch
         ]
 
+        raw_texts = [item["texts"] for item in batch]
+
         return {
             "audio_arrays": audio_arrays,
             "sampling_rate": sampling_rate,
-            "texts": texts
+            "texts": texts,
+            "raw_texts": raw_texts
         }

@@ -61,8 +61,6 @@ def get_data():
             ["audio", "transcript"]
         ).rename_column(
             "transcript", "texts"
-        ).cast_column(
-            "audio", Audio(sampling_rate=16000)
         ) for lang in FACEBOOK_LANGS
     ]
     fb_test = [
@@ -75,8 +73,6 @@ def get_data():
             ["audio", "transcript"]
         ).rename_column(
             "transcript", "texts"
-        ).cast_column(
-            "audio", Audio(sampling_rate=16000)
         ) for lang in FACEBOOK_LANGS
     ]
 
@@ -95,8 +91,6 @@ def get_data():
             ["audio", "transcription"]
         ).rename_column(
             "transcription", "texts"
-        ).cast_column(
-            "audio", Audio(sampling_rate=16000)
         )
 
         ds_test = load_dataset(
@@ -108,8 +102,6 @@ def get_data():
             ["audio", "transcription"]
         ).rename_column(
             "transcription", "texts"
-        ).cast_column(
-            "audio", Audio(sampling_rate=16000)
         )
 
         waxal_train.append(ds_train)
@@ -129,8 +121,6 @@ def get_data():
             ["audio", "transcription"]
         ).rename_column(
             "transcription", "texts"
-        ).cast_column(
-            "audio", Audio(sampling_rate=16000)
         ) for code in FLEURS_LOW_MED.values()
     ]
     fleurs_test = [
@@ -143,8 +133,6 @@ def get_data():
             ["audio", "transcription"]
         ).rename_column(
             "transcription", "texts"
-        ).cast_column(
-            "audio", Audio(sampling_rate=16000)
         ) for code in FLEURS_LOW_MED.values()
     ]
 
