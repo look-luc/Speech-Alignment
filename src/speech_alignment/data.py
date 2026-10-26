@@ -1,4 +1,4 @@
-from datasets import Audio, concatenate_datasets, load_dataset
+from datasets import concatenate_datasets, load_dataset
 
 FACEBOOK_LANGS = [
     "dutch",
@@ -54,22 +54,24 @@ def get_data():
         load_dataset(
             "facebook/multilingual_librispeech",
             lang,
-            split="train"
+            split="train",
+            streaming=True
         ).select_columns(
             ["audio", "transcript"]
         ).rename_column(
-            "transcript","texts"
+            "transcript", "texts"
         ) for lang in FACEBOOK_LANGS
     ]
     fb_test = [
         load_dataset(
             "facebook/multilingual_librispeech",
             lang,
-            split="test"
+            split="test",
+            streaming=True
         ).select_columns(
             ["audio", "transcript"]
         ).rename_column(
-            "transcript","texts"
+            "transcript", "texts"
         ) for lang in FACEBOOK_LANGS
     ]
 
@@ -81,26 +83,23 @@ def get_data():
         ds_train = load_dataset(
             "google/WaxalNLP",
             f"{code}_asr",
-            split="train"
+            split="train",
+            streaming=True
         ).select_columns(
-            ["audio","transcript"]
+            ["audio", "transcript"]
         ).rename_column(
             "transcript", "texts"
         )
         ds_test = load_dataset(
             "google/WaxalNLP",
             f"{code}_asr",
-            split="test"
+            split="test",
+            streaming=True
         ).select_columns(
-            ["audio","transcript"]
+            ["audio", "transcript"]
         ).rename_column(
             "transcript", "texts"
         )
-
-        if "audio" in ds_train.features:
-            ds_train = ds_train.cast_column("audio", Audio(decode=False))
-        if "audio" in ds_test.features:
-            ds_test = ds_test.cast_column("audio", Audio(decode=False))
 
         waxal_train.append(ds_train)
         waxal_test.append(ds_test)
@@ -112,9 +111,10 @@ def get_data():
         load_dataset(
             "google/fleurs",
             code,
-            split="train"
+            split="train",
+            streaming=True
         ).select_columns(
-            ["audio","transcript"]
+            ["audio", "transcript"]
         ).rename_column(
             "transcript", "texts"
         ) for code in FLEURS_LOW_MED.values()
@@ -123,9 +123,10 @@ def get_data():
         load_dataset(
             "google/fleurs",
             code,
-            split="test"
+            split="test",
+            streaming=True
         ).select_columns(
-            ["audio","transcript"]
+            ["audio", "transcript"]
         ).rename_column(
             "transcript", "texts"
         ) for code in FLEURS_LOW_MED.values()

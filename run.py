@@ -11,3 +11,7 @@ def main():
     if args:
         model = Forced_Aligner()
         final_model = model.train()
+
+if __name__ == "__main__":
+    main()
+    print("ran")
