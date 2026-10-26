@@ -44,7 +44,7 @@ class Forced_Aligner:
 
     def train_pipeline(
         self,
-        batch_size: int = 16,
+        batch_size: int = 4,
         output_dir: str = "./multiling_forced_aligner_model",
         num_epochs: int = 1,
         learning_rate: float = 5e-5
@@ -109,7 +109,7 @@ class Forced_Aligner:
 
     def evaluate_pipeline(
         self,
-        batch_size: int = 16,
+        batch_size: int = 4,
         output_dir: str = "./multiling_forced_aligner_model"
     ):
         test_splits = (

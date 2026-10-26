@@ -41,5 +41,4 @@ module load python
 
 uv sync
 
-MODEL_TYPE=${1:-train}
-uv run run.py --"$MODEL_TYPE"
+uv run run.py
