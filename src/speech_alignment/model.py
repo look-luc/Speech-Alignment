@@ -47,11 +47,11 @@ class Forced_Aligner:
         num_epochs: int = 1,
         learning_rate: float = 5e-5
     ):
-        train_splits = [
-            self.data["facebook"][0],
-            self.data["waxal"][0],
+        train_splits = (
+            self.data["facebook"][0] +
+            self.data["waxal"][0] +
             self.data["fleurs"][0]
-        ]
+        )
 
         combined_train_data = ChainedIterableDataset(train_splits)
 
@@ -110,11 +110,11 @@ class Forced_Aligner:
         batch_size: int = 16,
         output_dir: str = "./multiling_forced_aligner_model"
     ):
-        test_splits = [
-            self.data["facebook"][1],
-            self.data["waxal"][1],
+        test_splits = (
+            self.data["facebook"][1] +
+            self.data["waxal"][1] +
             self.data["fleurs"][1]
-        ]
+        )
 
         combined_test_data = ChainedIterableDataset(test_splits)
 
@@ -201,7 +201,7 @@ class Forced_Aligner:
 
     def collate_fn(self, batch):
         audio_arrays = [item["audio"]["array"] for item in batch]
-        sampling_rate = batch[0]["audio"]["sampling_rate"] if "audio" in batch[0] else 16000
+        sampling_rate = 16000
 
         texts = [
             self.aligner_processor.apply_chat_template(
