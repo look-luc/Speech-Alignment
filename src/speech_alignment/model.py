@@ -99,7 +99,7 @@ class Forced_Aligner:
                     optimizer.step()
                     total_loss += loss.item()
 
-                if step % 50 == 0 and step > 0:
+                if step % 5 == 0 and step > 0:
                     print(f"Epoch {epoch+1} | Step {step} | Running Loss: {total_loss / (step + 1):.4f}")
 
         print(f"Saving fine-tuned model to {output_dir}...")
