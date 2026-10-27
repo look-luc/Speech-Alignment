@@ -1,7 +1,9 @@
 import gc
+import io
 import itertools
 
 import torch
+import torchaudio
 import torchaudio.functional as F
 from peft import LoraConfig, TaskType, get_peft_model
 from torch.utils.data import DataLoader, IterableDataset
@@ -66,7 +68,7 @@ class Forced_Aligner:
 
         group_names = ["facebook", "waxal", "fleurs"]
 
-        print("Starting training pipeline with memory optimizations...")
+        print("Starting training pipeline with robust audio decoding...")
         for epoch in range(num_epochs):
             print(f"=== Epoch {epoch+1} / {num_epochs} ===")
 
@@ -144,11 +146,23 @@ class Forced_Aligner:
         max_frames = int(max_duration_seconds * target_sr)
 
         for item in batch:
-            arr = torch.tensor(item["audio"]["array"], dtype=torch.float32)
-            orig_sr = item["audio"].get("sampling_rate", target_sr)
+            try:
+                audio_info = item["audio"]
+                audio_bytes = audio_info.get("bytes")
+                if not audio_bytes:
+                    continue
 
-            if orig_sr != target_sr:
-                arr = F.resample(arr, orig_freq=orig_sr, new_freq=target_sr)
+                arr, orig_sr = torchaudio.load(io.BytesIO(audio_bytes))
+
+                if arr.shape[0] > 1:
+                    arr = arr.mean(dim=0, keepdim=True)
+                arr = arr.squeeze(0)
+
+                if orig_sr != target_sr:
+                    arr = F.resample(arr, orig_freq=orig_sr, new_freq=target_sr)
+
+            except Exception:
+                continue
 
             transcript = item["texts"]
             total_samples = arr.numel()
