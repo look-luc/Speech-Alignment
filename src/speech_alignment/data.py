@@ -50,14 +50,15 @@ FLEURS_LOW_MED = {
 }
 
 def get_data():
-    # 1. Multilingual LibriSpeech
+    MAX_MLS_SAMPLES = 3000
+
     fb_train = [
         load_dataset(
             "facebook/multilingual_librispeech",
             lang,
             split="train",
             streaming=True
-        ).select_columns(
+        ).shuffle(seed=42).take(MAX_MLS_SAMPLES).select_columns(
             ["audio", "transcript"]
         ).rename_column(
             "transcript", "texts"

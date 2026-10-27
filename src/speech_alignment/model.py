@@ -73,17 +73,6 @@ class Forced_Aligner:
         optimizer = torch.optim.AdamW(self.aligner_model.parameters(), lr=learning_rate)
         self.aligner_model.train()
 
-        train_loader = DataLoader(
-            combined_train_data,
-            batch_size=batch_size,
-            shuffle=True,
-            collate_fn=self.collate_fn,
-            num_workers=0
-        )
-
-        optimizer = torch.optim.AdamW(self.aligner_model.parameters(), lr=learning_rate)
-        self.aligner_model.train()
-
         print("Starting training / fine-tuning pipeline...")
         for epoch in range(num_epochs):
             total_loss = 0.0
@@ -222,16 +211,25 @@ class Forced_Aligner:
     def collate_fn(self, batch):
         audio_arrays = []
         target_sr = 16000
+        max_duration_seconds = 15.0
+        max_frames = int(max_duration_seconds * target_sr)
 
+        filtered_batch = []
         for item in batch:
             arr = torch.tensor(item["audio"]["array"], dtype=torch.float32)
             orig_sr = item["audio"].get("sampling_rate", target_sr)
 
-            # Resample on-the-fly if sample rates differ
             if orig_sr != target_sr:
                 arr = F.resample(arr, orig_freq=orig_sr, new_freq=target_sr)
 
+            if arr.numel() > max_frames:
+                continue
+
             audio_arrays.append(arr.numpy())
+            filtered_batch.append(item)
+
+        if not filtered_batch:
+            return None
 
         texts = [
             self.aligner_processor.apply_chat_template(
@@ -239,10 +237,10 @@ class Forced_Aligner:
                 tokenize=False,
                 add_generation_prompt=False
             )
-            for item in batch
+            for item in filtered_batch
         ]
 
-        raw_texts = [item["texts"] for item in batch]
+        raw_texts = [item["texts"] for item in filtered_batch]
 
         return {
             "audio_arrays": audio_arrays,
