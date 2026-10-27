@@ -12,6 +12,9 @@
 #SBATCH --account=ucb-general
 #SBATCH --mail-type=END,FAIL
 
+export PYTHONUNBUFFERED=1
+cd /projects/$USER/Speech-Alignment
+
 export HF_TOKEN=$(grep -v '^#' .env | grep 'HUGGINGFACE_TOKEN=' | cut -d '=' -f2-)
 export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK
 export OPENBLAS_NUM_THREADS=1
@@ -23,25 +26,21 @@ export TMP="/tmp"
 export TEMP="/tmp"
 
 export SCRATCH="${SCRATCH:-/scratch/alpine/$USER}"
-
 export HF_HOME="/scratch/alpine/$USER/hf_cache"
 export HF_DATASETS_CACHE="/scratch/alpine/$USER/hf_cache/datasets"
 export TRANSFORMERS_CACHE="/scratch/alpine/$USER/hf_cache/transformers"
 export EVALUATE_CACHE_DIR="/scratch/alpine/$USER/hf_cache/evaluate"
-
 export TOKENIZERS_PARALLELISM=false
 
 mkdir -p "$HF_HOME" "$HF_DATASETS_CACHE" "$TRANSFORMERS_CACHE" "$EVALUATE_CACHE_DIR"
-
-cd /projects/$USER/Speech-Alignment
 
 module purge
 module load ffmpeg
 module load uv
 
-# Link NVIDIA NCCL from the .venv and let FFmpeg load its shared libraries via the module environment
 export LD_LIBRARY_PATH=".venv/lib/python3.11/site-packages/nvidia/nccl/lib:$LD_LIBRARY_PATH"
 
 uv sync
 
+echo "Starting Python execution via uv run..."
 uv run run.py
