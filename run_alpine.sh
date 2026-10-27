@@ -5,7 +5,7 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
-#SBATCH --mem=64G
+#SBATCH --mem=128G
 #SBATCH --time=12:30:00
 #SBATCH --output=/projects/%u/Speech-Alignment/logs/%j.log
 #SBATCH --job-name=forced-aligner-test
@@ -14,7 +14,6 @@
 
 export HF_TOKEN=$(grep -v '^#' .env | grep 'HUGGINGFACE_TOKEN=' | cut -d '=' -f2-)
 export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK
-export TOKENIZERS_PARALLELISM=false
 export OPENBLAS_NUM_THREADS=1
 export MKL_NUM_THREADS=1
 export NUMEXPR_NUM_THREADS=1
@@ -25,12 +24,14 @@ export TEMP="/tmp"
 
 export SCRATCH="${SCRATCH:-/scratch/alpine/$USER}"
 
-export HF_HOME="$SCRATCH/.cache/huggingface"
-export EVALUATE_CACHE_DIR="$SCRATCH/.cache/evaluate"
-export TRANSFORMERS_CACHE="$SCRATCH/.cache/transformers"
-export LD_LIBRARY_PATH=$CONDA_PREFIX/lib:$LD_LIBRARY_PATH
+export HF_HOME="/scratch/alpine/$USER/hf_cache"
+export HF_DATASETS_CACHE="/scratch/alpine/$USER/hf_cache/datasets"
+export TRANSFORMERS_CACHE="/scratch/alpine/$USER/hf_cache/transformers"
+export EVALUATE_CACHE_DIR="/scratch/alpine/$USER/hf_cache/evaluate"
 
-mkdir -p "$HF_HOME" "$EVALUATE_CACHE_DIR" "$TRANSFORMERS_CACHE"
+export TOKENIZERS_PARALLELISM=false
+
+mkdir -p "$HF_HOME" "$HF_DATASETS_CACHE" "$TRANSFORMERS_CACHE" "$EVALUATE_CACHE_DIR"
 
 export LD_LIBRARY_PATH=$CONDA_PREFIX/lib/python3.11/site-packages/nvidia/nccl/lib:$CONDA_PREFIX/lib:$LD_LIBRARY_PATH
 cd /projects/$USER/Speech-Alignment

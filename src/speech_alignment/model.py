@@ -1,3 +1,4 @@
+import gc
 import itertools
 
 import evaluate
@@ -10,7 +11,7 @@ from transformers import (
     AutoProcessor,
 )
 
-from src.speech_alignment.data import get_data
+from src.speech_alignment.data import get_dataset_group
 
 
 class ChainedIterableDataset(IterableDataset):
@@ -33,7 +34,7 @@ class Forced_Aligner:
             device_map="auto"
         )
 
-        self.data = get_data()
+        # Removed global self.data = get_data() to save memory upfront
 
         if torch.cuda.is_available():
             self.device = "cuda"
@@ -49,68 +50,80 @@ class Forced_Aligner:
         num_epochs: int = 1,
         learning_rate: float = 5e-5
     ):
-        train_splits = (
-            self.data["facebook"][0] +
-            self.data["waxal"][0] +
-            self.data["fleurs"][0]
-        )
-
-        # Interleave streaming datasets uniformly without needing a buffer
-        combined_train_data = interleave_datasets(
-            train_splits,
-            seed=42,
-            stopping_strategy="first_exhausted"
-        )
-
-        train_loader = DataLoader(
-            combined_train_data,
-            batch_size=batch_size,
-            shuffle=False,
-            collate_fn=self.collate_fn,
-            num_workers=0
-        )
-
         optimizer = torch.optim.AdamW(self.aligner_model.parameters(), lr=learning_rate)
         self.aligner_model.train()
 
-        print("Starting training / fine-tuning pipeline...")
+        group_names = ["facebook", "waxal", "fleurs"]
+
+        print("Starting sequential training pipeline with on-demand dataset loading...")
         for epoch in range(num_epochs):
-            total_loss = 0.0
-            print(f"Initializing data loader iterator for Epoch {epoch+1}...")
-            for step, batch in enumerate(train_loader):
-                if batch is None:
+            print(f"=== Epoch {epoch+1} / {num_epochs} ===")
+
+            for group_name in group_names:
+                print(f"Loading dataset group into memory: {group_name}...")
+                train_splits, _ = get_dataset_group(group_name)
+
+                if not train_splits:
                     continue
 
-                print(f"Successfully fetched batch {step}")
-                audio_arrays = batch["audio_arrays"]
-                sampling_rate = batch["sampling_rate"]
-                transcript_texts = batch["texts"]
+                group_train_data = interleave_datasets(
+                    train_splits,
+                    seed=42,
+                    stopping_strategy="first_exhausted"
+                )
 
-                processed_inputs = self.aligner_processor(
-                    audio=audio_arrays,
-                    sampling_rate=sampling_rate,
-                    text=transcript_texts,
-                    padding=True,
-                    return_tensors="pt"
-                ).to(self.device)
+                train_loader = DataLoader(
+                    group_train_data,
+                    batch_size=batch_size,
+                    shuffle=False,
+                    collate_fn=self.collate_fn,
+                    num_workers=0
+                )
 
-                model_dtype = self.aligner_model.dtype
-                processed_inputs = {
-                    k: v.to(dtype=model_dtype) if v.is_floating_point() else v
-                    for k, v in processed_inputs.items()
-                }
+                total_loss = 0.0
+                step_count = 0
 
-                outputs = self.aligner_model(**processed_inputs)
-                loss = outputs.loss
+                for step, batch in enumerate(train_loader):
+                    if batch is None:
+                        continue
 
-                if loss is not None:
-                    optimizer.zero_grad()
-                    loss.backward()
-                    optimizer.step()
-                    total_loss += loss.item()
+                    audio_arrays = batch["audio_arrays"]
+                    sampling_rate = batch["sampling_rate"]
+                    transcript_texts = batch["texts"]
 
-                if step % 5 == 0 and step >= 0:
-                    print(f"Epoch {epoch+1} | Step {step} | Running Loss: {total_loss / (step + 1):.4f}")
+                    processed_inputs = self.aligner_processor(
+                        audio=audio_arrays,
+                        sampling_rate=sampling_rate,
+                        text=transcript_texts,
+                        padding=True,
+                        return_tensors="pt"
+                    ).to(self.device)
+
+                    model_dtype = self.aligner_model.dtype
+                    processed_inputs = {
+                        k: v.to(dtype=model_dtype) if v.is_floating_point() else v
+                        for k, v in processed_inputs.items()
+                    }
+
+                    outputs = self.aligner_model(**processed_inputs)
+                    loss = outputs.loss
+
+                    if loss is not None:
+                        optimizer.zero_grad()
+                        loss.backward()
+                        optimizer.step()
+                        total_loss += loss.item()
+                        step_count += 1
+
+                    if step % 5 == 0 and step_count > 0:
+                        print(f"[{group_name}] Epoch {epoch+1} | Step {step} | Running Loss: {total_loss / step_count:.4f}")
+
+                # Explicitly free memory for this dataset group before loading the next
+                del train_splits
+                del group_train_data
+                del train_loader
+                gc.collect()
+                torch.cuda.empty_cache()
 
         print(f"Saving fine-tuned model to {output_dir}...")
         self.aligner_model.save_pretrained(output_dir)
@@ -122,11 +135,11 @@ class Forced_Aligner:
         batch_size: int = 4,
         output_dir: str = "./multiling_forced_aligner_model"
     ):
-        test_splits = (
-            self.data["facebook"][1] +
-            self.data["waxal"][1] +
-            self.data["fleurs"][1]
-        )
+        # Load test splits on-demand for evaluation
+        test_splits = []
+        for g in ["facebook", "waxal", "fleurs"]:
+            _, t_splits = get_dataset_group(g)
+            test_splits.extend(t_splits)
 
         combined_test_data = ChainedIterableDataset(test_splits)
 
@@ -231,13 +244,11 @@ class Forced_Aligner:
             transcript = item["texts"]
             total_samples = arr.numel()
 
-            # If audio fits within 15 seconds, keep it directly
             if total_samples <= max_frames:
                 if total_samples >= target_sr * 1.0:
                     audio_arrays.append(arr.numpy())
                     raw_texts.append(transcript)
             else:
-                # Sliding-window chunking for long-form audio
                 words = transcript.split()
                 total_words = len(words)
                 samples_per_word = total_samples / max(total_words, 1)
