@@ -76,8 +76,11 @@ class Forced_Aligner:
         print("Starting training / fine-tuning pipeline...")
         for epoch in range(num_epochs):
             total_loss = 0.0
-            print(f"Initializing data loader iterator for Epoch {epoch+1}...") # Added debug print
+            print(f"Initializing data loader iterator for Epoch {epoch+1}...")
             for step, batch in enumerate(train_loader):
+                if batch is None:
+                    continue
+
                 print(f"Successfully fetched batch {step}")
                 audio_arrays = batch["audio_arrays"]
                 sampling_rate = batch["sampling_rate"]
@@ -145,6 +148,9 @@ class Forced_Aligner:
         print("Running forced alignment inference on test splits...")
         with torch.inference_mode():
             for batch in test_loader:
+                if batch is None:
+                    continue
+
                 audio_arrays = batch["audio_arrays"]
                 sampling_rate = batch["sampling_rate"]
                 transcript_texts = batch["texts"]
@@ -210,11 +216,11 @@ class Forced_Aligner:
 
     def collate_fn(self, batch):
         audio_arrays = []
+        raw_texts = []
         target_sr = 16000
         max_duration_seconds = 15.0
         max_frames = int(max_duration_seconds * target_sr)
 
-        filtered_batch = []
         for item in batch:
             arr = torch.tensor(item["audio"]["array"], dtype=torch.float32)
             orig_sr = item["audio"].get("sampling_rate", target_sr)
@@ -222,25 +228,56 @@ class Forced_Aligner:
             if orig_sr != target_sr:
                 arr = F.resample(arr, orig_freq=orig_sr, new_freq=target_sr)
 
-            if arr.numel() > max_frames:
-                continue
+            transcript = item["texts"]
+            total_samples = arr.numel()
 
-            audio_arrays.append(arr.numpy())
-            filtered_batch.append(item)
+            # If audio fits within 15 seconds, keep it directly
+            if total_samples <= max_frames:
+                if total_samples >= target_sr * 1.0:
+                    audio_arrays.append(arr.numpy())
+                    raw_texts.append(transcript)
+            else:
+                # Sliding-window chunking for long-form audio
+                words = transcript.split()
+                total_words = len(words)
+                samples_per_word = total_samples / max(total_words, 1)
 
-        if not filtered_batch:
+                current_start = 0
+                current_word_idx = 0
+
+                while current_start < total_samples:
+                    current_end = min(current_start + max_frames, total_samples)
+                    audio_chunk = arr[current_start:current_end]
+
+                    estimated_words = round(audio_chunk.numel() / samples_per_word)
+                    next_word_idx = min(current_word_idx + max(estimated_words, 1), total_words)
+                    text_chunk = " ".join(words[current_word_idx:next_word_idx])
+
+                    if audio_chunk.numel() >= target_sr * 1.0 and len(text_chunk.strip()) > 0:
+                        audio_arrays.append(audio_chunk.numpy())
+                        raw_texts.append(text_chunk)
+
+                    current_start = current_end
+                    current_word_idx = next_word_idx
+
+                    if current_word_idx >= total_words and current_start < total_samples:
+                        remaining_audio = arr[current_start:total_samples]
+                        if remaining_audio.numel() >= target_sr * 1.0:
+                            audio_arrays.append(remaining_audio.numpy())
+                            raw_texts.append("")
+                        break
+
+        if not audio_arrays:
             return None
 
         texts = [
             self.aligner_processor.apply_chat_template(
-                [{"role": "user", "content": [{"type": "audio"}, {"type": "text", "text": item["texts"]}]}],
+                [{"role": "user", "content": [{"type": "audio"}, {"type": "text", "text": t}]}],
                 tokenize=False,
                 add_generation_prompt=False
             )
-            for item in filtered_batch
+            for t in raw_texts
         ]
-
-        raw_texts = [item["texts"] for item in filtered_batch]
 
         return {
             "audio_arrays": audio_arrays,
