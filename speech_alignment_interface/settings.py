@@ -10,6 +10,7 @@ For the full list of settings and their values, see
 https://docs.djangoproject.com/en/6.1/ref/settings/
 """
 
+import os
 from pathlib import Path
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
@@ -20,7 +21,11 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # See https://docs.djangoproject.com/en/6.1/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = 'django-insecure-k_p_$%lpl2r6%)1735@bgx5)hs%!^n=4#*akf5k@l=3+ve*ghb'
+SECRET_KEY = os.getenv("SECRET_KEY", "django-insecure-key-for-dev")
+DATABASE_PASSWORD = str(os.getenv("DATABASE"))
+USER = str(os.getenv("USER"))
+HOST=str(os.getenv("HOST"))
+PORT = os.getenv("PORT")
 
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
@@ -74,8 +79,12 @@ WSGI_APPLICATION = 'speech_alignment_interface.wsgi.application'
 
 DATABASES = {
     'default': {
-        'ENGINE': 'django.db.backends.sqlite3',
-        'NAME': BASE_DIR / 'db.sqlite3',
+        'ENGINE': 'django.db.backends.postgresql',
+        'NAME': 'forced-aligner-proj',
+        'USER': USER,
+        'PASSWORD': DATABASE_PASSWORD,
+        'HOST': HOST,
+        'PORT': PORT,
     }
 }
 
