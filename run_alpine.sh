@@ -16,8 +16,6 @@ export PYTHONUNBUFFERED=1
 cd /projects/$USER/Speech-Alignment
 
 export HF_TOKEN=$(grep -v '^#' .env | grep 'HUGGINGFACE_TOKEN=' | cut -d '=' -f2-)
-export HF_HUB_OFFLINE=1
-export HF_DATASETS_OFFLINE=1
 
 export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK
 export OPENBLAS_NUM_THREADS=1
@@ -30,8 +28,6 @@ export TEMP="/tmp"
 
 export SCRATCH="${SCRATCH:-/scratch/alpine/$USER}"
 export HF_HOME="/scratch/alpine/$USER/hf_cache"
-export HF_DATASETS_CACHE="/scratch/alpine/$USER/hf_cache/datasets"
-export TRANSFORMERS_CACHE="/scratch/alpine/$USER/hf_cache/transformers"
 export EVALUATE_CACHE_DIR="/scratch/alpine/$USER/hf_cache/evaluate"
 export TOKENIZERS_PARALLELISM=false
 

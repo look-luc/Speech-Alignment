@@ -77,6 +77,7 @@ class Forced_Aligner:
                 train_splits, _ = get_dataset_group(group_name)
 
                 if not train_splits:
+                    print(f"Warning: No train splits found for group {group_name}")
                     continue
 
                 group_train_data = ChainedIterableDataset(train_splits)
@@ -94,6 +95,9 @@ class Forced_Aligner:
 
                 for step, batch in enumerate(train_loader):
                     if batch is None:
+                        # Debug: lets you know a batch was filtered out or empty
+                        if step < 5:
+                            print(f"[{group_name}] Notice: Batch {step} returned None (skipped).")
                         continue
 
                     audio_arrays = batch["audio_arrays"]
@@ -127,6 +131,7 @@ class Forced_Aligner:
                     if step % 5 == 0 and step_count > 0:
                         print(f"[{group_name}] Epoch {epoch+1} | Step {step} | Running Loss: {total_loss / step_count:.4f}")
 
+                print(f"Finished group {group_name}. Total valid steps executed: {step_count}")
                 del train_splits
                 del group_train_data
                 del train_loader
@@ -142,12 +147,14 @@ class Forced_Aligner:
         audio_arrays = []
         raw_texts = []
         target_sr = 16000
-        max_duration_seconds = 30.0
-        max_frames = int(max_duration_seconds * target_sr)
+        min_chunk_samples = int(target_sr * 1.0) # 1 second minimum duration
 
         for item in batch:
             try:
-                audio_info = item["audio"]
+                audio_info = item.get("audio")
+                if not audio_info:
+                    continue
+
                 audio_bytes = audio_info.get("bytes")
                 audio_path = audio_info.get("path")
 
@@ -160,12 +167,10 @@ class Forced_Aligner:
 
                 arr = torch.tensor(waveform_np, dtype=torch.float32)
 
-                # soundfile returns (frames,) for mono or (frames, channels) for multi-channel.
-                # PyTorch/torchaudio models expect [channels, frames].
                 if arr.ndim == 1:
-                    arr = arr.unsqueeze(0)  # [1, frames]
+                    arr = arr.unsqueeze(0)
                 else:
-                    arr = arr.transpose(0, 1)  # [channels, frames]
+                    arr = arr.transpose(0, 1)
 
                 if arr.shape[0] > 1:
                     arr = arr.mean(dim=0, keepdim=True)
@@ -175,45 +180,41 @@ class Forced_Aligner:
                     arr = F.resample(arr.unsqueeze(0), orig_freq=orig_sr, new_freq=target_sr).squeeze(0)
 
             except Exception as e:
-                print(f"Audio load error: {e}")
+                print(f"Audio load exception encountered: {e}")
                 continue
 
-            transcript = item["texts"]
+            transcript = item.get("texts", "")
             total_samples = arr.numel()
 
-            if total_samples <= max_frames:
-                if total_samples >= target_sr * 1.0:
-                    audio_arrays.append(arr.numpy())
-                    raw_texts.append(transcript)
-            else:
-                words = transcript.split()
-                total_words = len(words)
-                samples_per_word = total_samples / max(total_words, 1)
+            words = transcript.split()
+            total_words = len(words)
+            if total_words == 0 or total_samples < min_chunk_samples:
+                continue
 
-                current_start = 0
-                current_word_idx = 0
+            samples_per_word = total_samples / total_words
 
-                while current_start < total_samples:
-                    current_end = min(current_start + max_frames, total_samples)
+            current_start = 0
+            current_word_idx = 0
+
+            while current_start < total_samples and current_word_idx < total_words:
+                remaining_words = total_words - current_word_idx
+                estimated_words = max(1, min(remaining_words, 15)) # Process in word blocks
+
+                current_end = min(current_start + int(samples_per_word * estimated_words), total_samples)
+                audio_chunk = arr[current_start:current_end]
+
+                if audio_chunk.numel() < min_chunk_samples and current_end < total_samples:
+                    current_end = min(current_start + min_chunk_samples, total_samples)
                     audio_chunk = arr[current_start:current_end]
 
-                    estimated_words = round(audio_chunk.numel() / samples_per_word)
-                    next_word_idx = min(current_word_idx + max(estimated_words, 1), total_words)
-                    text_chunk = " ".join(words[current_word_idx:next_word_idx])
+                text_chunk = " ".join(words[current_word_idx : current_word_idx + estimated_words])
 
-                    if audio_chunk.numel() >= target_sr * 1.0 and len(text_chunk.strip()) > 0:
-                        audio_arrays.append(audio_chunk.numpy())
-                        raw_texts.append(text_chunk)
+                if audio_chunk.numel() >= min_chunk_samples and len(text_chunk.strip()) > 0:
+                    audio_arrays.append(audio_chunk.numpy())
+                    raw_texts.append(text_chunk)
 
-                    current_start = current_end
-                    current_word_idx = next_word_idx
-
-                    if current_word_idx >= total_words and current_start < total_samples:
-                        remaining_audio = arr[current_start:total_samples]
-                        if remaining_audio.numel() >= target_sr * 1.0:
-                            audio_arrays.append(remaining_audio.numpy())
-                            raw_texts.append("")
-                        break
+                current_start = current_end
+                current_word_idx += estimated_words
 
         if not audio_arrays:
             return None
