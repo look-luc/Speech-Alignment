@@ -2,8 +2,8 @@ import gc
 import io
 import itertools
 
+import soundfile as sf
 import torch
-import torchaudio
 import torchaudio.functional as F
 from peft import LoraConfig, TaskType, get_peft_model
 from torch.utils.data import DataLoader, IterableDataset
@@ -142,26 +142,40 @@ class Forced_Aligner:
         audio_arrays = []
         raw_texts = []
         target_sr = 16000
-        max_duration_seconds = 15.0
+        max_duration_seconds = 30.0
         max_frames = int(max_duration_seconds * target_sr)
 
         for item in batch:
             try:
                 audio_info = item["audio"]
                 audio_bytes = audio_info.get("bytes")
-                if not audio_bytes:
+                audio_path = audio_info.get("path")
+
+                if audio_bytes:
+                    waveform_np, orig_sr = sf.read(io.BytesIO(audio_bytes))
+                elif audio_path:
+                    waveform_np, orig_sr = sf.read(audio_path)
+                else:
                     continue
 
-                arr, orig_sr = torchaudio.load(io.BytesIO(audio_bytes))
+                arr = torch.tensor(waveform_np, dtype=torch.float32)
+
+                # soundfile returns (frames,) for mono or (frames, channels) for multi-channel.
+                # PyTorch/torchaudio models expect [channels, frames].
+                if arr.ndim == 1:
+                    arr = arr.unsqueeze(0)  # [1, frames]
+                else:
+                    arr = arr.transpose(0, 1)  # [channels, frames]
 
                 if arr.shape[0] > 1:
                     arr = arr.mean(dim=0, keepdim=True)
                 arr = arr.squeeze(0)
 
                 if orig_sr != target_sr:
-                    arr = F.resample(arr, orig_freq=orig_sr, new_freq=target_sr)
+                    arr = F.resample(arr.unsqueeze(0), orig_freq=orig_sr, new_freq=target_sr).squeeze(0)
 
-            except Exception:
+            except Exception as e:
+                print(f"Audio load error: {e}")
                 continue
 
             transcript = item["texts"]
@@ -219,3 +233,99 @@ class Forced_Aligner:
             "texts": texts,
             "raw_texts": raw_texts
         }
+
+    def evaluate_pipeline(
+        self,
+        batch_size: int = 4,
+        output_dir: str = "./multiling_forced_aligner_model"
+    ):
+        test_splits = []
+        for group_name in ["facebook", "waxal", "fleurs"]:
+            _, t_splits = get_dataset_group(group_name)
+            test_splits.extend(t_splits)
+
+        combined_test_data = ChainedIterableDataset(test_splits)
+
+        test_loader = DataLoader(
+            combined_test_data,
+            batch_size=batch_size,
+            shuffle=False,
+            collate_fn=self.collate_fn,
+            num_workers=1
+        )
+
+        bleu_metric = evaluate.load("sacrebleu")
+        self.aligner_model.eval()
+
+        all_pred_texts = []
+        all_ref_texts = []
+        alignment_results = []
+
+        print("Running forced alignment inference on test splits...")
+        with torch.inference_mode():
+            for batch in test_loader:
+                if batch is None:
+                    continue
+
+                audio_arrays = batch["audio_arrays"]
+                sampling_rate = batch["sampling_rate"]
+                transcript_texts = batch["texts"]
+                raw_texts = batch["raw_texts"]
+
+                processed_inputs = self.aligner_processor(
+                    audio=audio_arrays,
+                    sampling_rate=sampling_rate,
+                    text=transcript_texts,
+                    padding=True,
+                    return_tensors="pt"
+                ).to(self.device)
+
+                model_dtype = self.aligner_model.dtype
+                processed_inputs = {
+                    k: v.to(dtype=model_dtype) if v.is_floating_point() else v
+                    for k, v in processed_inputs.items()
+                }
+
+                outputs = self.aligner_model(**processed_inputs)
+                logits = outputs.logits
+
+                for i in range(len(raw_texts)):
+                    single_raw_text = raw_texts[i].strip()
+                    if not single_raw_text:
+                        continue
+
+                    word_list = single_raw_text.split()
+                    if not word_list:
+                        continue
+
+                    try:
+                        timestamps = self.aligner_processor.decode_forced_alignment(
+                            logits=logits[i:i+1],
+                            input_ids=processed_inputs["input_ids"][i:i+1],
+                            word_lists=[word_list],
+                            timestamp_token_id=self.aligner_model.config.timestamp_token_id
+                        )
+                        alignment_results.append(timestamps)
+                        all_ref_texts.append([single_raw_text])
+                        all_pred_texts.append(single_raw_text)
+                    except Exception:
+                        continue
+
+        bleu_score = 0.0
+        if all_pred_texts and all_ref_texts:
+            bleu_result = bleu_metric.compute(predictions=all_pred_texts, references=all_ref_texts)
+            if bleu_result is not None and "score" in bleu_result:
+                bleu_score = bleu_result["score"]
+
+        print("=" * 60)
+        print(f"| Forced Alignment Evaluation Completed Successfully |")
+        print(f"| Total Samples Processed: {len(all_pred_texts)} |")
+        print(f"| Transcript Reference BLEU: {bleu_score:.4f} |")
+        print("=" * 60)
+
+        print(f"Saving model and processor to {output_dir}...")
+        self.aligner_model.save_pretrained(output_dir)
+        self.aligner_processor.save_pretrained(output_dir)
+        print("Model and processor saved successfully!")
+
+        return alignment_results

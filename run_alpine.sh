@@ -33,12 +33,14 @@ export TOKENIZERS_PARALLELISM=false
 
 mkdir -p "$HF_HOME" "$HF_DATASETS_CACHE" "$TRANSFORMERS_CACHE" "$EVALUATE_CACHE_DIR"
 
-export LD_LIBRARY_PATH=$CONDA_PREFIX/lib/python3.11/site-packages/nvidia/nccl/lib:$CONDA_PREFIX/lib:$LD_LIBRARY_PATH
 cd /projects/$USER/Speech-Alignment
 
-module load slurm/alpine
+module purge
+module load ffmpeg
 module load uv
-module load python
+
+# Link NVIDIA NCCL from the .venv and let FFmpeg load its shared libraries via the module environment
+export LD_LIBRARY_PATH=".venv/lib/python3.11/site-packages/nvidia/nccl/lib:$LD_LIBRARY_PATH"
 
 uv sync
 

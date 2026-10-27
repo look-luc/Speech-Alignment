@@ -1,3 +1,8 @@
+import io
+
+import soundfile as sf
+import torch
+import torchaudio.functional as ta_func
 from datasets import Audio, Features, Value, load_dataset
 
 FACEBOOK_LANGS = [
@@ -73,3 +78,61 @@ def get_dataset_group(group_name: str):
         return train_splits, test_splits
 
     raise ValueError(f"Unknown dataset group: {group_name}")
+
+def load_and_preprocess_dataset(dataset_name, dataset_config=None, split="train", target_sr=16000, streaming=True):
+    """
+    Loads a Hugging Face speech dataset with decoding disabled and processes
+    audio files using soundfile (via bytes buffer or path) to completely bypass torchcodec and FFmpeg.
+    """
+    if dataset_config:
+        dataset = load_dataset(dataset_name, dataset_config, split=split, streaming=streaming)
+    else:
+        dataset = load_dataset(dataset_name, split=split, streaming=streaming)
+
+    # 1. Disable automatic decoding to prevent torchcodec/ffmpeg invocation
+    dataset = dataset.cast_column("audio", Audio(decode=False))
+
+    def process_batch(batch):
+        waveforms = []
+        sample_rates = []
+
+        for audio_item in batch["audio"]:
+            # Handle streaming raw bytes or local file paths safely
+            if "bytes" in audio_item and audio_item["bytes"] is not None:
+                audio_source = io.BytesIO(audio_item["bytes"])
+            else:
+                audio_source = audio_item["path"]
+
+            # 2. Load audio using soundfile (relies on libsndfile)
+            waveform_np, sr = sf.read(audio_source)
+
+            # 3. Convert numpy array to PyTorch tensor
+            waveform = torch.tensor(waveform_np, dtype=torch.float32)
+
+            # Ensure shape is [channels, frames] required by PyTorch models
+            if waveform.ndim == 1:
+                waveform = waveform.unsqueeze(0)  # Mono -> [1, frames]
+            else:
+                waveform = waveform.transpose(0, 1)  # Stereo -> [channels, frames]
+
+            # 4. Resample if necessary using torchaudio's pure math backend (no file I/O)
+            if sr != target_sr:
+                waveform = ta_func.resample(waveform, orig_freq=sr, new_freq=target_sr)
+                sr = target_sr
+
+            waveforms.append(waveform)
+            sample_rates.append(sr)
+
+        batch["input_values"] = waveforms
+        batch["sampling_rate"] = sample_rates
+        return batch
+
+    # 5. Map the preprocessing function across the dataset
+    processed_dataset = dataset.map(
+        process_batch,
+        batched=True,
+        batch_size=32,
+        remove_columns=["audio"]
+    )
+
+    return processed_dataset
