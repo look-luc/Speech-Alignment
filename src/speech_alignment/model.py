@@ -1,10 +1,9 @@
 import gc
 import itertools
 
-import evaluate
 import torch
 import torchaudio.functional as F
-from datasets import interleave_datasets
+from peft import LoraConfig, TaskType, get_peft_model
 from torch.utils.data import DataLoader, IterableDataset
 from transformers import (
     AutoModelForTokenClassification,
@@ -28,13 +27,25 @@ class Forced_Aligner:
         self.aligner_model_id = "Qwen/Qwen3-ForcedAligner-0.6B-hf"
 
         self.aligner_processor = AutoProcessor.from_pretrained(self.aligner_model_id)
-        self.aligner_model = AutoModelForTokenClassification.from_pretrained(
+
+        base_model = AutoModelForTokenClassification.from_pretrained(
             self.aligner_model_id,
             dtype=torch.bfloat16,
             device_map="auto"
         )
 
-        # Removed global self.data = get_data() to save memory upfront
+        base_model.gradient_checkpointing_enable()
+
+        peft_config = LoraConfig(
+            task_type=TaskType.TOKEN_CLS,
+            inference_mode=False,
+            r=8,
+            lora_alpha=32,
+            lora_dropout=0.05,
+            target_modules=["q_proj", "v_proj", "k_proj", "out_proj"]
+        )
+        self.aligner_model = get_peft_model(base_model, peft_config)
+        self.aligner_model.print_trainable_parameters()
 
         if torch.cuda.is_available():
             self.device = "cuda"
@@ -45,7 +56,7 @@ class Forced_Aligner:
 
     def train_pipeline(
         self,
-        batch_size: int = 4,
+        batch_size: int = 1,
         output_dir: str = "./multiling_forced_aligner_model",
         num_epochs: int = 1,
         learning_rate: float = 5e-5
@@ -55,22 +66,18 @@ class Forced_Aligner:
 
         group_names = ["facebook", "waxal", "fleurs"]
 
-        print("Starting sequential training pipeline with on-demand dataset loading...")
+        print("Starting training pipeline with memory optimizations...")
         for epoch in range(num_epochs):
             print(f"=== Epoch {epoch+1} / {num_epochs} ===")
 
             for group_name in group_names:
-                print(f"Loading dataset group into memory: {group_name}...")
+                print(f"Loading dataset group: {group_name}...")
                 train_splits, _ = get_dataset_group(group_name)
 
                 if not train_splits:
                     continue
 
-                group_train_data = interleave_datasets(
-                    train_splits,
-                    seed=42,
-                    stopping_strategy="first_exhausted"
-                )
+                group_train_data = ChainedIterableDataset(train_splits)
 
                 train_loader = DataLoader(
                     group_train_data,
@@ -118,7 +125,6 @@ class Forced_Aligner:
                     if step % 5 == 0 and step_count > 0:
                         print(f"[{group_name}] Epoch {epoch+1} | Step {step} | Running Loss: {total_loss / step_count:.4f}")
 
-                # Explicitly free memory for this dataset group before loading the next
                 del train_splits
                 del group_train_data
                 del train_loader
@@ -129,103 +135,6 @@ class Forced_Aligner:
         self.aligner_model.save_pretrained(output_dir)
         self.aligner_processor.save_pretrained(output_dir)
         print("Training completed and model saved successfully!")
-
-    def evaluate_pipeline(
-        self,
-        batch_size: int = 4,
-        output_dir: str = "./multiling_forced_aligner_model"
-    ):
-        # Load test splits on-demand for evaluation
-        test_splits = []
-        for g in ["facebook", "waxal", "fleurs"]:
-            _, t_splits = get_dataset_group(g)
-            test_splits.extend(t_splits)
-
-        combined_test_data = ChainedIterableDataset(test_splits)
-
-        test_loader = DataLoader(
-            combined_test_data,
-            batch_size=batch_size,
-            shuffle=False,
-            collate_fn=self.collate_fn,
-            num_workers=1
-        )
-
-        bleu_metric = evaluate.load("sacrebleu")
-        self.aligner_model.eval()
-
-        all_pred_texts = []
-        all_ref_texts = []
-        alignment_results = []
-
-        print("Running forced alignment inference on test splits...")
-        with torch.inference_mode():
-            for batch in test_loader:
-                if batch is None:
-                    continue
-
-                audio_arrays = batch["audio_arrays"]
-                sampling_rate = batch["sampling_rate"]
-                transcript_texts = batch["texts"]
-                raw_texts = batch["raw_texts"]
-
-                processed_inputs = self.aligner_processor(
-                    audio=audio_arrays,
-                    sampling_rate=sampling_rate,
-                    text=transcript_texts,
-                    padding=True,
-                    return_tensors="pt"
-                ).to(self.device)
-
-                model_dtype = self.aligner_model.dtype
-                processed_inputs = {
-                    k: v.to(dtype=model_dtype) if v.is_floating_point() else v
-                    for k, v in processed_inputs.items()
-                }
-
-                outputs = self.aligner_model(**processed_inputs)
-                logits = outputs.logits
-
-                for i in range(len(raw_texts)):
-                    single_raw_text = raw_texts[i].strip()
-                    if not single_raw_text:
-                        continue
-
-                    word_list = single_raw_text.split()
-                    if not word_list:
-                        continue
-
-                    try:
-                        timestamps = self.aligner_processor.decode_forced_alignment(
-                            logits=logits[i:i+1],
-                            input_ids=processed_inputs["input_ids"][i:i+1],
-                            word_lists=[word_list],
-                            timestamp_token_id=self.aligner_model.config.timestamp_token_id
-                        )
-                        alignment_results.append(timestamps)
-                        all_ref_texts.append([single_raw_text])
-                        all_pred_texts.append(single_raw_text)
-                    except Exception:
-                        continue
-
-        bleu_score = 0.0
-        if all_pred_texts and all_ref_texts:
-            bleu_result = bleu_metric.compute(predictions=all_pred_texts, references=all_ref_texts)
-            if bleu_result is not None and "score" in bleu_result:
-                bleu_score = bleu_result["score"]
-
-        print("=" * 60)
-        print(f"| Forced Alignment Evaluation Completed Successfully |")
-        print(f"| Total Samples Processed: {len(all_pred_texts)} |")
-        print(f"| Transcript Reference BLEU: {bleu_score:.4f} |")
-        print("=" * 60)
-
-        print(f"Saving model and processor to {output_dir}...")
-        self.aligner_model.save_pretrained(output_dir)
-        self.aligner_processor.save_pretrained(output_dir)
-        print("Model and processor saved successfully!")
-
-        return alignment_results
 
     def collate_fn(self, batch):
         audio_arrays = []
