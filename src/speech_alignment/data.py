@@ -25,18 +25,18 @@ FLEURS_LOW_MED = {
 }
 
 def get_dataset_group(group_name: str):
-    """Loads and returns train/test splits with decode=False for robust audio loading."""
+    """Loads and returns train/test splits with decode=False and trust_remote_code=True for offline execution."""
     if group_name == "facebook":
         MAX_MLS_SAMPLES = 3000
         train_splits = [
-            load_dataset("facebook/multilingual_librispeech", lang, split="train", streaming=True)
-            .shuffle(seed=42).take(MAX_MLS_SAMPLES)
+            load_dataset("facebook/multilingual_librispeech", lang, split="train", streaming=False, trust_remote_code=True)
+            .shuffle(seed=42).select(range(min(MAX_MLS_SAMPLES, 50000)))
             .select_columns(["audio", "transcript"]).rename_column("transcript", "texts")
             .cast_column("audio", Audio(sampling_rate=16000, decode=False))
             for lang in FACEBOOK_LANGS
         ]
         test_splits = [
-            load_dataset("facebook/multilingual_librispeech", lang, split="test", streaming=True)
+            load_dataset("facebook/multilingual_librispeech", lang, split="test", streaming=False, trust_remote_code=True)
             .select_columns(["audio", "transcript"]).rename_column("transcript", "texts")
             .cast_column("audio", Audio(sampling_rate=16000, decode=False))
             for lang in FACEBOOK_LANGS
@@ -51,12 +51,12 @@ def get_dataset_group(group_name: str):
         train_splits, test_splits = [], []
         for code in WAXAL_LANG_CODE.values():
             train_splits.append(
-                load_dataset("google/WaxalNLP", f"{code}_asr", split="train", streaming=True, features=waxal_features)
+                load_dataset("google/WaxalNLP", f"{code}_asr", split="train", streaming=False, features=waxal_features, trust_remote_code=True)
                 .select_columns(["audio", "transcription"]).rename_column("transcription", "texts")
                 .cast_column("audio", Audio(sampling_rate=16000, decode=False))
             )
             test_splits.append(
-                load_dataset("google/WaxalNLP", f"{code}_asr", split="test", streaming=True, features=waxal_features)
+                load_dataset("google/WaxalNLP", f"{code}_asr", split="test", streaming=False, features=waxal_features, trust_remote_code=True)
                 .select_columns(["audio", "transcription"]).rename_column("transcription", "texts")
                 .cast_column("audio", Audio(sampling_rate=16000, decode=False))
             )
@@ -64,13 +64,13 @@ def get_dataset_group(group_name: str):
 
     elif group_name == "fleurs":
         train_splits = [
-            load_dataset("google/fleurs", code, split="train", streaming=True)
+            load_dataset("google/fleurs", code, split="train", streaming=False, trust_remote_code=True)
             .select_columns(["audio", "transcription"]).rename_column("transcription", "texts")
             .cast_column("audio", Audio(sampling_rate=16000, decode=False))
             for code in FLEURS_LOW_MED.values()
         ]
         test_splits = [
-            load_dataset("google/fleurs", code, split="test", streaming=True)
+            load_dataset("google/fleurs", code, split="test", streaming=False, trust_remote_code=True)
             .select_columns(["audio", "transcription"]).rename_column("transcription", "texts")
             .cast_column("audio", Audio(sampling_rate=16000, decode=False))
             for code in FLEURS_LOW_MED.values()
@@ -79,17 +79,16 @@ def get_dataset_group(group_name: str):
 
     raise ValueError(f"Unknown dataset group: {group_name}")
 
-def load_and_preprocess_dataset(dataset_name, dataset_config=None, split="train", target_sr=16000, streaming=True):
+def load_and_preprocess_dataset(dataset_name, dataset_config=None, split="train", target_sr=16000, streaming=False):
     """
     Loads a Hugging Face speech dataset with decoding disabled and processes
-    audio files using soundfile (via bytes buffer or path) to completely bypass torchcodec and FFmpeg.
+    audio files using soundfile to completely bypass torchcodec and FFmpeg.
     """
     if dataset_config:
-        dataset = load_dataset(dataset_name, dataset_config, split=split, streaming=streaming)
+        dataset = load_dataset(dataset_name, dataset_config, split=split, streaming=streaming, trust_remote_code=True)
     else:
-        dataset = load_dataset(dataset_name, split=split, streaming=streaming)
+        dataset = load_dataset(dataset_name, split=split, streaming=streaming, trust_remote_code=True)
 
-    # 1. Disable automatic decoding to prevent torchcodec/ffmpeg invocation
     dataset = dataset.cast_column("audio", Audio(decode=False))
 
     def process_batch(batch):
@@ -97,25 +96,19 @@ def load_and_preprocess_dataset(dataset_name, dataset_config=None, split="train"
         sample_rates = []
 
         for audio_item in batch["audio"]:
-            # Handle streaming raw bytes or local file paths safely
             if "bytes" in audio_item and audio_item["bytes"] is not None:
                 audio_source = io.BytesIO(audio_item["bytes"])
             else:
                 audio_source = audio_item["path"]
 
-            # 2. Load audio using soundfile (relies on libsndfile)
             waveform_np, sr = sf.read(audio_source)
-
-            # 3. Convert numpy array to PyTorch tensor
             waveform = torch.tensor(waveform_np, dtype=torch.float32)
 
-            # Ensure shape is [channels, frames] required by PyTorch models
             if waveform.ndim == 1:
-                waveform = waveform.unsqueeze(0)  # Mono -> [1, frames]
+                waveform = waveform.unsqueeze(0)
             else:
-                waveform = waveform.transpose(0, 1)  # Stereo -> [channels, frames]
+                waveform = waveform.transpose(0, 1)
 
-            # 4. Resample if necessary using torchaudio's pure math backend (no file I/O)
             if sr != target_sr:
                 waveform = ta_func.resample(waveform, orig_freq=sr, new_freq=target_sr)
                 sr = target_sr
@@ -127,7 +120,6 @@ def load_and_preprocess_dataset(dataset_name, dataset_config=None, split="train"
         batch["sampling_rate"] = sample_rates
         return batch
 
-    # 5. Map the preprocessing function across the dataset
     processed_dataset = dataset.map(
         process_batch,
         batched=True,

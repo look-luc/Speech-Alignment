@@ -16,6 +16,9 @@ export PYTHONUNBUFFERED=1
 cd /projects/$USER/Speech-Alignment
 
 export HF_TOKEN=$(grep -v '^#' .env | grep 'HUGGINGFACE_TOKEN=' | cut -d '=' -f2-)
+export HF_HUB_OFFLINE=1
+export HF_DATASETS_OFFLINE=1
+
 export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK
 export OPENBLAS_NUM_THREADS=1
 export MKL_NUM_THREADS=1
@@ -42,5 +45,5 @@ export LD_LIBRARY_PATH=".venv/lib/python3.11/site-packages/nvidia/nccl/lib:$LD_L
 
 uv sync
 
-echo "Starting Python execution via uv run..."
+echo "Starting Python execution via uv run (Offline Mode Enabled)..."
 uv run run.py
