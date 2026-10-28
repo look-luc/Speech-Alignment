@@ -28,6 +28,8 @@ export TEMP="/tmp"
 
 export SCRATCH="${SCRATCH:-/scratch/alpine/$USER}"
 export HF_HOME="/scratch/alpine/$USER/hf_cache"
+export HF_DATASETS_CACHE="/scratch/alpine/$USER/huggingface_cache/datasets"
+export HF_HUB_CACHE="/scratch/alpine/$USER/huggingface_cache/hub"
 export EVALUATE_CACHE_DIR="/scratch/alpine/$USER/hf_cache/evaluate"
 export TOKENIZERS_PARALLELISM=false
 

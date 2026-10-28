@@ -5,12 +5,6 @@ import evaluate
 import soundfile as sf
 import torch
 import torchaudio.functional as F
-from data import (
-    FLEURS_LOW_MED,
-    WAXAL_LANG_CODE,
-    UnifiedSpeechDataset,
-    load_single_language_data,
-)
 from peft import LoraConfig, TaskType, get_peft_model
 from torch.utils.data import DataLoader
 from transformers import (
@@ -18,8 +12,12 @@ from transformers import (
     AutoProcessor,
 )
 
-# Import the custom clean data loader from data_4.py
-from src.speech_alignment.data import load_single_language_data
+from src.speech_alignment.data import (
+    FLEURS_LOW_MED,
+    WAXAL_LANG_CODE,
+    UnifiedSpeechDataset,
+    load_single_language_data,
+)
 
 
 class Forced_Aligner:

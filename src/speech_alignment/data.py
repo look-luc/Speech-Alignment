@@ -1,3 +1,4 @@
+import gc
 import os
 
 import pandas as pd
@@ -40,6 +41,7 @@ def load_waxal_clean(language_subset: str = "ach_asr", split: str = "train") -> 
 
     datasets_list = []
     for file_path in sorted(parquet_files):
+        # Read into Pandas
         df = pd.read_parquet(file_path)
 
         if "__index_level_0__" in df.columns:
@@ -53,7 +55,17 @@ def load_waxal_clean(language_subset: str = "ach_asr", split: str = "train") -> 
         ds = Dataset.from_pandas(df)
         datasets_list.append(ds)
 
-    return concatenate_datasets(datasets_list)
+        # Explicitly delete the intermediate dataframe and free memory
+        del df
+        gc.collect()
+
+    combined_dataset = concatenate_datasets(datasets_list)
+
+    # Clean up the list references
+    del datasets_list
+    gc.collect()
+
+    return combined_dataset
 
 
 def load_single_language_data(language_name: str, split: str = "train") -> Dataset:
