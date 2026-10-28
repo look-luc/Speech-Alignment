@@ -1,27 +1,18 @@
 import gc
 import io
-import itertools
 
+import evaluate
 import soundfile as sf
 import torch
 import torchaudio.functional as F
 from peft import LoraConfig, TaskType, get_peft_model
-from torch.utils.data import DataLoader, IterableDataset
+from torch.utils.data import ConcatDataset, DataLoader
 from transformers import (
     AutoModelForTokenClassification,
     AutoProcessor,
 )
 
 from src.speech_alignment.data import get_dataset_group
-
-
-class ChainedIterableDataset(IterableDataset):
-    """Helper to chain multiple streaming datasets without HF feature schema conflicts."""
-    def __init__(self, dataset_list):
-        self.dataset_list = dataset_list
-
-    def __iter__(self):
-        return itertools.chain.from_iterable(self.dataset_list)
 
 
 class Forced_Aligner:
@@ -66,7 +57,8 @@ class Forced_Aligner:
         optimizer = torch.optim.AdamW(self.aligner_model.parameters(), lr=learning_rate)
         self.aligner_model.train()
 
-        group_names = ["facebook", "waxal", "fleurs"]
+        # Removed "facebook" to focus exclusively on low/medium resource languages
+        group_names = ["waxal", "fleurs"]
 
         print("Starting training pipeline with robust audio decoding...")
         for epoch in range(num_epochs):
@@ -80,14 +72,15 @@ class Forced_Aligner:
                     print(f"Warning: No train splits found for group {group_name}")
                     continue
 
-                group_train_data = ChainedIterableDataset(train_splits)
+                group_train_data = ConcatDataset(train_splits)
 
                 train_loader = DataLoader(
                     group_train_data,
                     batch_size=batch_size,
                     shuffle=False,
                     collate_fn=self.collate_fn,
-                    num_workers=0
+                    num_workers=4,
+                    pin_memory=True
                 )
 
                 total_loss = 0.0
@@ -95,7 +88,6 @@ class Forced_Aligner:
 
                 for step, batch in enumerate(train_loader):
                     if batch is None:
-                        # Debug: lets you know a batch was filtered out or empty
                         if step < 5:
                             print(f"[{group_name}] Notice: Batch {step} returned None (skipped).")
                         continue
@@ -147,7 +139,7 @@ class Forced_Aligner:
         audio_arrays = []
         raw_texts = []
         target_sr = 16000
-        min_chunk_samples = int(target_sr * 1.0) # 1 second minimum duration
+        min_chunk_samples = int(target_sr * 1.0)
 
         for item in batch:
             try:
@@ -198,7 +190,7 @@ class Forced_Aligner:
 
             while current_start < total_samples and current_word_idx < total_words:
                 remaining_words = total_words - current_word_idx
-                estimated_words = max(1, min(remaining_words, 15)) # Process in word blocks
+                estimated_words = max(1, min(remaining_words, 15))
 
                 current_end = min(current_start + int(samples_per_word * estimated_words), total_samples)
                 audio_chunk = arr[current_start:current_end]
@@ -241,18 +233,19 @@ class Forced_Aligner:
         output_dir: str = "./multiling_forced_aligner_model"
     ):
         test_splits = []
-        for group_name in ["facebook", "waxal", "fleurs"]:
+        for group_name in ["waxal", "fleurs"]:
             _, t_splits = get_dataset_group(group_name)
             test_splits.extend(t_splits)
 
-        combined_test_data = ChainedIterableDataset(test_splits)
+        combined_test_data = ConcatDataset(test_splits)
 
         test_loader = DataLoader(
             combined_test_data,
             batch_size=batch_size,
             shuffle=False,
             collate_fn=self.collate_fn,
-            num_workers=1
+            num_workers=4,
+            pin_memory=True
         )
 
         bleu_metric = evaluate.load("sacrebleu")
