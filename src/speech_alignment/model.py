@@ -5,15 +5,21 @@ import evaluate
 import soundfile as sf
 import torch
 import torchaudio.functional as F
-
-# Import the custom clean data loader from data_4.py
-from data_4 import load_combined_speech_data
+from data import (
+    FLEURS_LOW_MED,
+    WAXAL_LANG_CODE,
+    UnifiedSpeechDataset,
+    load_single_language_data,
+)
 from peft import LoraConfig, TaskType, get_peft_model
 from torch.utils.data import DataLoader
 from transformers import (
     AutoModelForTokenClassification,
     AutoProcessor,
 )
+
+# Import the custom clean data loader from data_4.py
+from src.speech_alignment.data import load_single_language_data
 
 
 class Forced_Aligner:
@@ -48,86 +54,80 @@ class Forced_Aligner:
         else:
             self.device = "cpu"
 
-    def train_pipeline(
-        self,
-        batch_size: int = 1,
-        output_dir: str = "./multiling_forced_aligner_model",
-        num_epochs: int = 1,
-        learning_rate: float = 5e-5,
-        waxal_subset: str = "ewe_asr",
-        fleurs_lang: str = "ee_gh"
-    ):
+    def train_pipeline(self, num_epochs: int = 1, batch_size: int = 1, learning_rate: float = 5e-5):
         optimizer = torch.optim.AdamW(self.aligner_model.parameters(), lr=learning_rate)
         self.aligner_model.train()
 
-        print("Loading combined WaxalNLP + FLEURS training dataset...")
-        train_dataset = load_combined_speech_data(
-            waxal_subset=waxal_subset,
-            fleurs_lang=fleurs_lang,
-            split="train"
-        )
+        # Get a combined unique list of all languages you want to iterate over
+        all_languages = sorted(list(set(list(WAXAL_LANG_CODE.keys()) + list(FLEURS_LOW_MED.keys()))))
 
-        train_loader = DataLoader(
-            train_dataset,
-            batch_size=batch_size,
-            shuffle=True,
-            collate_fn=self.collate_fn,
-            num_workers=4,
-            pin_memory=True
-        )
-
-        print("Starting training pipeline...")
         for epoch in range(num_epochs):
-            print(f"=== Epoch {epoch+1} / {num_epochs} ===")
-            total_loss = 0.0
-            step_count = 0
+            print(f"\n=== Epoch {epoch+1} / {num_epochs} ===")
 
-            for step, batch in enumerate(train_loader):
-                if batch is None:
+            for lang_name in all_languages:
+                print(f"\n--- Processing Language: {lang_name} ---")
+
+                try:
+                    # 1. Load data for ONE language at a time
+                    raw_ds = load_single_language_data(language_name=lang_name, split="train")
+                    train_dataset = UnifiedSpeechDataset(raw_ds, self.aligner_processor)
+
+                    train_loader = DataLoader(
+                        train_dataset,
+                        batch_size=batch_size,
+                        shuffle=True,
+                        collate_fn=self.collate_fn,
+                        num_workers=2,
+                        pin_memory=True
+                    )
+
+                    total_loss = 0.0
+                    step_count = 0
+
+                    # 2. Train on this language's batch loader
+                    for step, batch in enumerate(train_loader):
+                        if batch is None:
+                            continue
+
+                        audio_arrays = batch["audio_arrays"]
+                        sampling_rate = batch["sampling_rate"]
+                        transcript_texts = batch["texts"]
+
+                        processed_inputs = self.aligner_processor(
+                            audio=audio_arrays,
+                            sampling_rate=sampling_rate,
+                            text=transcript_texts,
+                            padding=True,
+                            return_tensors="pt"
+                        ).to(self.device)
+
+                        model_dtype = self.aligner_model.dtype
+                        processed_inputs = {
+                            k: v.to(dtype=model_dtype) if v.is_floating_point() else v
+                            for k, v in processed_inputs.items()
+                        }
+
+                        outputs = self.aligner_model(**processed_inputs)
+                        loss = outputs.loss
+
+                        if loss is not None:
+                            optimizer.zero_grad()
+                            loss.backward()
+                            optimizer.step()
+                            total_loss += loss.item()
+                            step_count += 1
+
+                    if step_count > 0:
+                        print(f"[{lang_name}] Completed | Average Loss: {total_loss / step_count:.4f}")
+
+                    # 3. Clean up memory before moving to the next language
+                    del raw_ds, train_dataset, train_loader
+                    gc.collect()
+                    torch.cuda.empty_cache()
+
+                except Exception as e:
+                    print(f"Skipping {lang_name} due to loading/training error: {e}")
                     continue
-
-                audio_arrays = batch["audio_arrays"]
-                sampling_rate = batch["sampling_rate"]
-                transcript_texts = batch["texts"]
-
-                processed_inputs = self.aligner_processor(
-                    audio=audio_arrays,
-                    sampling_rate=sampling_rate,
-                    text=transcript_texts,
-                    padding=True,
-                    return_tensors="pt"
-                ).to(self.device)
-
-                model_dtype = self.aligner_model.dtype
-                processed_inputs = {
-                    k: v.to(dtype=model_dtype) if v.is_floating_point() else v
-                    for k, v in processed_inputs.items()
-                }
-
-                outputs = self.aligner_model(**processed_inputs)
-                loss = outputs.loss
-
-                if loss is not None:
-                    optimizer.zero_grad()
-                    loss.backward()
-                    optimizer.step()
-                    total_loss += loss.item()
-                    step_count += 1
-
-                if step % 5 == 0 and step_count > 0:
-                    print(f"Epoch {epoch+1} | Step {step} | Running Loss: {total_loss / step_count:.4f}")
-
-            print(f"Epoch {epoch+1} completed. Total valid steps: {step_count}")
-
-        print(f"Saving fine-tuned model to {output_dir}...")
-        self.aligner_model.save_pretrained(output_dir)
-        self.aligner_processor.save_pretrained(output_dir)
-        print("Training completed and model saved successfully!")
-
-        del train_dataset
-        del train_loader
-        gc.collect()
-        torch.cuda.empty_cache()
 
     def collate_fn(self, batch):
         audio_arrays = []
@@ -230,33 +230,9 @@ class Forced_Aligner:
     def evaluate_pipeline(
         self,
         batch_size: int = 4,
-        output_dir: str = "./multiling_forced_aligner_model",
-        waxal_subset: str = "ewe_asr",
-        fleurs_lang: str = "ee_gh"
+        output_dir: str = "./multiling_forced_aligner_model"
     ):
-        print("Loading combined evaluation dataset...")
-        try:
-            test_dataset = load_combined_speech_data(
-                waxal_subset=waxal_subset,
-                fleurs_lang=fleurs_lang,
-                split="test"
-            )
-        except Exception:
-            # Fallback to validation split if test split isn't available
-            test_dataset = load_combined_speech_data(
-                waxal_subset=waxal_subset,
-                fleurs_lang=fleurs_lang,
-                split="validation"
-            )
-
-        test_loader = DataLoader(
-            test_dataset,
-            batch_size=batch_size,
-            shuffle=False,
-            collate_fn=self.collate_fn,
-            num_workers=4,
-            pin_memory=True
-        )
+        from data import FLEURS_LOW_MED, WAXAL_LANG_CODE, load_single_language_data
 
         bleu_metric = evaluate.load("sacrebleu")
         self.aligner_model.eval()
@@ -265,55 +241,95 @@ class Forced_Aligner:
         all_ref_texts = []
         alignment_results = []
 
-        print("Running forced alignment inference on test/validation split...")
+        # Get a sorted, unique list of all languages from your dictionaries
+        all_languages = sorted(list(set(list(WAXAL_LANG_CODE.keys()) + list(FLEURS_LOW_MED.keys()))))
+
+        print("Running language-by-language forced alignment evaluation...")
         with torch.inference_mode():
-            for batch in test_loader:
-                if batch is None:
-                    continue
+            for lang_name in all_languages:
+                print(f"\n--- Evaluating Language: {lang_name} ---")
+                test_dataset = None
 
-                audio_arrays = batch["audio_arrays"]
-                sampling_rate = batch["sampling_rate"]
-                transcript_texts = batch["texts"]
-                raw_texts = batch["raw_texts"]
-
-                processed_inputs = self.aligner_processor(
-                    audio=audio_arrays,
-                    sampling_rate=sampling_rate,
-                    text=transcript_texts,
-                    padding=True,
-                    return_tensors="pt"
-                ).to(self.device)
-
-                model_dtype = self.aligner_model.dtype
-                processed_inputs = {
-                    k: v.to(dtype=model_dtype) if v.is_floating_point() else v
-                    for k, v in processed_inputs.items()
-                }
-
-                outputs = self.aligner_model(**processed_inputs)
-                logits = outputs.logits
-
-                for i in range(len(raw_texts)):
-                    single_raw_text = raw_texts[i].strip()
-                    if not single_raw_text:
-                        continue
-
-                    word_list = single_raw_text.split()
-                    if not word_list:
-                        continue
-
+                # Multi-tier split fallback per language (tests -> validation -> train)
+                for split_candidate in ["test", "validation", "train"]:
                     try:
-                        timestamps = self.aligner_processor.decode_forced_alignment(
-                            logits=logits[i:i+1],
-                            input_ids=processed_inputs["input_ids"][i:i+1],
-                            word_lists=[word_list],
-                            timestamp_token_id=self.aligner_model.config.timestamp_token_id
-                        )
-                        alignment_results.append(timestamps)
-                        all_ref_texts.append([single_raw_text])
-                        all_pred_texts.append(single_raw_text)
+                        test_dataset = load_single_language_data(language_name=lang_name, split=split_candidate)
+                        print(f"Loaded {lang_name} using split: '{split_candidate}' ({len(test_dataset)} samples).")
+                        break
                     except Exception:
                         continue
+
+                if test_dataset is None or len(test_dataset) == 0:
+                    print(f"Notice: No data available for evaluation in {lang_name}. Skipping.")
+                    continue
+
+                test_loader = DataLoader(
+                    test_dataset,
+                    batch_size=batch_size,
+                    shuffle=False,
+                    collate_fn=self.collate_fn,
+                    num_workers=2,
+                    pin_memory=True
+                )
+
+                lang_pred_texts = []
+                lang_ref_texts = []
+
+                for batch in test_loader:
+                    if batch is None:
+                        continue
+
+                    audio_arrays = batch["audio_arrays"]
+                    sampling_rate = batch["sampling_rate"]
+                    transcript_texts = batch["texts"]
+                    raw_texts = batch["raw_texts"]
+
+                    processed_inputs = self.aligner_processor(
+                        audio=audio_arrays,
+                        sampling_rate=sampling_rate,
+                        text=transcript_texts,
+                        padding=True,
+                        return_tensors="pt"
+                    ).to(self.device)
+
+                    model_dtype = self.aligner_model.dtype
+                    processed_inputs = {
+                        k: v.to(dtype=model_dtype) if v.is_floating_point() else v
+                        for k, v in processed_inputs.items()
+                    }
+
+                    outputs = self.aligner_model(**processed_inputs)
+                    logits = outputs.logits
+
+                    for i in range(len(raw_texts)):
+                        single_raw_text = raw_texts[i].strip()
+                        if not single_raw_text:
+                            continue
+
+                        word_list = single_raw_text.split()
+                        if not word_list:
+                            continue
+
+                        try:
+                            timestamps = self.aligner_processor.decode_forced_alignment(
+                                logits=logits[i:i+1],
+                                input_ids=processed_inputs["input_ids"][i:i+1],
+                                word_lists=[word_list],
+                                timestamp_token_id=self.aligner_model.config.timestamp_token_id
+                            )
+                            alignment_results.append(timestamps)
+                            lang_ref_texts.append([single_raw_text])
+                            lang_pred_texts.append(single_raw_text)
+                        except Exception:
+                            continue
+
+                all_pred_texts.extend(lang_pred_texts)
+                all_ref_texts.extend(lang_ref_texts)
+
+                # Clean up memory per language iteration
+                del test_dataset, test_loader
+                gc.collect()
+                torch.cuda.empty_cache()
 
         bleu_score = 0.0
         if all_pred_texts and all_ref_texts:
@@ -322,9 +338,9 @@ class Forced_Aligner:
                 bleu_score = bleu_result["score"]
 
         print("=" * 60)
-        print("| Forced Alignment Evaluation Completed Successfully |")
-        print(f"| Total Samples Processed: {len(all_pred_texts)} |")
-        print(f"| Transcript Reference BLEU: {bleu_score:.4f} |")
+        print("| Language-by-Language Evaluation Completed Successfully |")
+        print(f"| Total Samples Processed Across All Languages: {len(all_pred_texts)} |")
+        print(f"| Overall Transcript Reference BLEU: {bleu_score:.4f} |")
         print("=" * 60)
 
         print(f"Saving model and processor to {output_dir}...")

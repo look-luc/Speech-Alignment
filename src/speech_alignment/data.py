@@ -1,106 +1,116 @@
 import os
 
-import pyarrow as pa
-import pyarrow.parquet as pq
+import pandas as pd
 import torch
 import torchaudio
 from datasets import Dataset, concatenate_datasets, load_dataset
 from huggingface_hub import snapshot_download
 from torch.utils.data import Dataset as TorchDataset
 
+WAXAL_LANG_CODE = {
+    "Acholi": "ach", "Luganda": "lug", "Masaaba": "mas", "Nyankole": "nyn",
+    "Soga": "sog", "Akan": "aka", "Ewe": "ewe", "Dagbani": "dag",
+}
 
-def load_waxal_clean(language_subset: str = "ewe_asr", split: str = "train") -> Dataset:
-    """
-    Custom loader for google/WaxalNLP to bypass upstream pandas index cast errors
-    caused by rogue '__index_level_0__' columns in parquet shards.
-    """
+FLEURS_LOW_MED = {
+    "Assamese": "as_in", "Gujarati": "gu_in", "Kannada": "kn_in", "Malayalam": "ml_in",
+    "Nepali": "ne_np", "Odia": "or_in", "Punjabi": "pa_in", "Sindhi": "sd_in",
+    "Cebuano": "ceb_ph", "Javanese": "jv_id", "Malay": "ms_my", "Maori": "mi_nz",
+    "Filipino": "fil_ph", "Kazakh": "kk_kz", "Kyrgyz": "ky_kg", "Pashto": "ps_af",
+    "Greek": "el_gr", "Finnish": "fi_fi", "Hungarian": "hu_hu", "Czech": "cs_cz",
+    "Ukrainian": "uk_ua", "Romanian": "ro_ro", "Bulgarian": "bg_bg", "catalan": "ca_es",
+    "occitan": "oc_fr",
+}
+
+
+def load_waxal_clean(language_subset: str = "ach_asr", split: str = "train") -> Dataset:
     repo_id = "google/WaxalNLP"
     repo_dir = snapshot_download(repo_id=repo_id, repo_type="dataset")
+
+    lang_code = language_subset.replace("_asr", "").replace("_tts", "")
 
     parquet_files = []
     for root, _, files in os.walk(repo_dir):
         for file in files:
-            if file.endswith(".parquet") and language_subset in root and split in file:
+            if file.endswith(".parquet") and lang_code in root and split in file:
                 parquet_files.append(os.path.join(root, file))
 
     if not parquet_files:
-        raise FileNotFoundError(f"No parquet files found for subset '{language_subset}' and split '{split}'.")
+        raise FileNotFoundError(f"No parquet files found for language code '{lang_code}' and split '{split}'.")
 
-    tables = []
+    datasets_list = []
     for file_path in sorted(parquet_files):
-        table = pq.read_table(file_path)
+        df = pd.read_parquet(file_path)
 
-        # Drop unexpected pandas index column if present upstream
-        if "__index_level_0__" in table.column_names:
-            table = table.drop(['__index_level_0__'])
+        if "__index_level_0__" in df.columns:
+            df = df.drop(columns=["__index_level_0__"])
 
-        tables.append(table)
+        if "text" in df.columns and "transcription" not in df.columns:
+            df = df.rename(columns={"text": "transcription"})
+        if "locale" in df.columns and "language" not in df.columns:
+            df = df.rename(columns={"locale": "language"})
 
-    combined_table = pa.concat_tables(tables)
-    return Dataset(combined_table)
+        ds = Dataset.from_pandas(df)
+        datasets_list.append(ds)
+
+    return concatenate_datasets(datasets_list)
 
 
-def load_combined_speech_data(
-    waxal_subset: str = "ewe_asr",
-    fleurs_lang: str = "ee_gh",
-    split: str = "train"
-) -> Dataset:
+def load_single_language_data(language_name: str, split: str = "train") -> Dataset:
     """
-    Single unified function to load and harmonize Google WaxalNLP and FLEURS datasets.
-    Maps both datasets to a standardized schema: ['audio', 'transcription', 'language', 'source']
+    Loads and harmonizes WaxalNLP and FLEURS data for a single specified language.
     """
-    print(f"Loading WaxalNLP subset: {waxal_subset} ({split})...")
-    waxal_ds = load_waxal_clean(language_subset=waxal_subset, split=split)
-
-    print(f"Loading FLEURS language: {fleurs_lang} ({split})...")
-    # FLEURS uses specific language codes like 'ee_gh' for Ewe (Ghana)
-    fleurs_ds = load_dataset("google/fleurs", fleurs_lang, split=split)
-
-    # 1. Harmonize WaxalNLP columns
-    # Waxal typically has: audio, transcription, language, speaker_id, gender
-    def map_waxal(batch):
-        return {
-            "audio": batch["audio"],
-            "transcription": batch["transcription"],
-            "language": batch.get("language", waxal_subset),
-            "source": "waxal"
-        }
-
-    # 2. Harmonize FLEURS columns
-    # FLEURS typically has: audio, transcription, raw_transcription, gender, lang_id, language
-    def map_fleurs(batch):
-        return {
-            "audio": batch["audio"],
-            "transcription": batch["transcription"],
-            "language": fleurs_lang,
-            "source": "fleurs"
-        }
-
-    # Apply transformations and keep only shared standardized columns
+    datasets_to_combine = []
     standard_columns = ["audio", "transcription", "language", "source"]
 
-    waxal_mapped = waxal_ds.map(
-        map_waxal,
-        remove_columns=[col for col in waxal_ds.column_names if col not in standard_columns]
-    )
+    # 1. Load WaxalNLP for this language if available
+    if language_name in WAXAL_LANG_CODE:
+        code = WAXAL_LANG_CODE[language_name]
+        subset = f"{code}_asr"
+        try:
+            print(f"Loading WaxalNLP for {language_name} ({subset})...")
+            waxal_ds = load_waxal_clean(language_subset=subset, split=split)
+            waxal_mapped = waxal_ds.map(
+                lambda b: {
+                    "audio": b["audio"],
+                    "transcription": b["transcription"],
+                    "language": b.get("language", subset),
+                    "source": "waxal"
+                },
+                remove_columns=[col for col in waxal_ds.column_names if col not in standard_columns]
+            )
+            datasets_to_combine.append(waxal_mapped)
+        except Exception as e:
+            print(f"Notice: No WaxalNLP data found for {language_name} ({e})")
 
-    fleurs_mapped = fleurs_ds.map(
-        map_fleurs,
-        remove_columns=[col for col in fleurs_ds.column_names if col not in standard_columns]
-    )
+    # 2. Load FLEURS for this language if available
+    if language_name in FLEURS_LOW_MED:
+        code = FLEURS_LOW_MED[language_name]
+        try:
+            print(f"Loading FLEURS for {language_name} ({code})...")
+            fleurs_ds = load_dataset("google/fleurs", code, split=split)
+            fleurs_mapped = fleurs_ds.map(
+                lambda b: {
+                    "audio": b["audio"],
+                    "transcription": b["transcription"],
+                    "language": code,
+                    "source": "fleurs"
+                },
+                remove_columns=[col for col in fleurs_ds.column_names if col not in standard_columns]
+            )
+            datasets_to_combine.append(fleurs_mapped)
+        except Exception as e:
+            print(f"Notice: No FLEURS data found for {language_name} ({e})")
 
-    # Concatenate both datasets seamlessly
-    combined_dataset = concatenate_datasets([waxal_mapped, fleurs_mapped])
-    print(f"Successfully combined datasets! Total samples: {len(combined_dataset)}")
+    if not datasets_to_combine:
+        raise ValueError(f"No datasets available for language: {language_name}")
 
+    combined_dataset = concatenate_datasets(datasets_to_combine)
+    print(f"Loaded {len(combined_dataset)} total samples for {language_name}.")
     return combined_dataset
 
 
 class UnifiedSpeechDataset(TorchDataset):
-    """
-    PyTorch Dataset wrapper for the combined WaxalNLP + FLEURS dataset.
-    Handles audio resampling, channel conversion, and processor feature extraction.
-    """
     def __init__(self, hf_dataset: Dataset, processor, sampling_rate: int = 16000):
         self.dataset = hf_dataset
         self.processor = processor
@@ -112,7 +122,6 @@ class UnifiedSpeechDataset(TorchDataset):
     def __getitem__(self, idx: int) -> dict:
         item = self.dataset[idx]
 
-        # Extract audio payload
         audio_data = item["audio"]
         if isinstance(audio_data, dict) and "path" in audio_data:
             speech_array, sr = torchaudio.load(audio_data["path"])
@@ -122,23 +131,19 @@ class UnifiedSpeechDataset(TorchDataset):
             speech_array = torch.tensor(audio_data["array"], dtype=torch.float32)
             sr = audio_data["sampling_rate"]
 
-        # Resample to target rate (e.g., 16kHz for Whisper/Qwen)
         if sr != self.sampling_rate:
             resampler = torchaudio.transforms.Resample(orig_freq=sr, new_freq=self.sampling_rate)
             speech_array = resampler(speech_array)
 
-        # Convert multi-channel to mono
         if speech_array.shape[0] > 1:
             speech_array = torch.mean(speech_array, dim=0, keepdim=True)
 
-        # Extract features
         input_features = self.processor(
             speech_array.squeeze().numpy(),
             sampling_rate=self.sampling_rate,
             return_tensors="pt"
         ).input_features[0]
 
-        # Tokenize labels
         labels = self.processor.tokenizer(item["transcription"]).input_ids
 
         return {
@@ -149,7 +154,6 @@ class UnifiedSpeechDataset(TorchDataset):
 
 
 if __name__ == "__main__":
-    # Test execution check
-    combined_ds = load_combined_speech_data(waxal_subset="ewe_asr", fleurs_lang="ee_gh", split="train")
+    combined_ds = load_all_speech_data(split="train")
     print("Sample 0 Source:", combined_ds[0]["source"])
     print("Sample -1 Source:", combined_ds[-1]["source"])
