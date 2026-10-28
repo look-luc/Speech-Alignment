@@ -75,7 +75,7 @@ class Forced_Aligner:
                         batch_size=batch_size,
                         shuffle=True,
                         collate_fn=self.collate_fn,
-                        num_workers=2,
+                        num_workers=0,
                         pin_memory=True
                     )
 
@@ -266,7 +266,7 @@ class Forced_Aligner:
                     batch_size=batch_size,
                     shuffle=False,
                     collate_fn=self.collate_fn,
-                    num_workers=2,
+                    num_workers=0,
                     pin_memory=True
                 )
 
