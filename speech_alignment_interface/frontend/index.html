@@ -4,17 +4,36 @@
     <head>
         <meta charset="UTF-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-        <title>My Django App</title>
-        <link rel="stylesheet" href="{% static 'index.css' %}" />
+        <title>Low Forced Qwingual</title>
+        <link
+            href="{% static 'index.css' %}"
+            rel="stylesheet"
+            type="text/css"
+        />
         <script type="module" src="{% static 'index.js' %}"></script>
     </head>
     <body>
         <div class="title">
-            <h1>Welcome to Low Forced Qwingual</h1>
-            <h2>
-                A multilingual forced aligner trained on low to mid resourced
-                languages
-            </h2>
+            <hgroup>
+                <h1>Welcome to Low Forced Qwingual</h1>
+                <h2>
+                    A multilingual forced aligner trained on low to mid
+                    resourced languages
+                </h2>
+            </hgroup>
+        </div>
+        <div class="audio-upload-container">
+            <label for="audio-upload" class="upload-dropzone">
+                <span class="upload-icon">Your audio file</span>
+                <span class="upload-text"
+                    >Drag & drop your audio file here, or
+                    <strong>browse</strong></span
+                >
+                <span class="file-info" id="file-name">No file selected</span>
+            </label>
+            <input type="file" id="audio-upload" accept="audio/*" hidden />
+
+            <audio id="audio-preview" controls style="display: none"></audio>
         </div>
     </body>
 </html>
