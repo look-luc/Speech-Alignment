@@ -1,20 +1,23 @@
 #!/bin/bash
-#SBATCH --partition=artxpro6000
+#SBATCH --partition=aa100
 #SBATCH --qos=gpu-normal
-#SBATCH --gres=gpu:rtx_pro_6000_2g.48gb:1
+#SBATCH --gres=gpu:a100_80gb:2
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
-#SBATCH --mem=64G
-#SBATCH --time=12:30:00
+#SBATCH --mem=157G
+#SBATCH --time=4:00:00
 #SBATCH --output=/projects/%u/Speech-Alignment/logs/%j.log
 #SBATCH --job-name=forced-aligner-test
 #SBATCH --account=ucb-general
 #SBATCH --mail-type=END,FAIL
 
+export PYTHONUNBUFFERED=1
+cd /projects/$USER/Speech-Alignment
+
 export HF_TOKEN=$(grep -v '^#' .env | grep 'HUGGINGFACE_TOKEN=' | cut -d '=' -f2-)
+
 export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK
-export TOKENIZERS_PARALLELISM=false
 export OPENBLAS_NUM_THREADS=1
 export MKL_NUM_THREADS=1
 export NUMEXPR_NUM_THREADS=1
@@ -24,22 +27,21 @@ export TMP="/tmp"
 export TEMP="/tmp"
 
 export SCRATCH="${SCRATCH:-/scratch/alpine/$USER}"
+export HF_HOME="/scratch/alpine/$USER/hf_cache"
+export HF_DATASETS_CACHE="/scratch/alpine/$USER/huggingface_cache/datasets"
+export HF_HUB_CACHE="/scratch/alpine/$USER/huggingface_cache/hub"
+export EVALUATE_CACHE_DIR="/scratch/alpine/$USER/hf_cache/evaluate"
+export TOKENIZERS_PARALLELISM=false
 
-export HF_HOME="$SCRATCH/.cache/huggingface"
-export EVALUATE_CACHE_DIR="$SCRATCH/.cache/evaluate"
-export TRANSFORMERS_CACHE="$SCRATCH/.cache/transformers"
-export LD_LIBRARY_PATH=$CONDA_PREFIX/lib:$LD_LIBRARY_PATH
+mkdir -p "$HF_HOME" "$HF_DATASETS_CACHE" "$TRANSFORMERS_CACHE" "$EVALUATE_CACHE_DIR"
 
-mkdir -p "$HF_HOME" "$EVALUATE_CACHE_DIR" "$TRANSFORMERS_CACHE"
-
-export LD_LIBRARY_PATH=$CONDA_PREFIX/lib/python3.11/site-packages/nvidia/nccl/lib:$CONDA_PREFIX/lib:$LD_LIBRARY_PATH
-cd /projects/$USER/Speech-Alignment
-
-module load slurm/alpine
+module purge
+module load ffmpeg
 module load uv
-module load python
+
+export LD_LIBRARY_PATH=".venv/lib/python3.11/site-packages/nvidia/nccl/lib:$LD_LIBRARY_PATH"
 
 uv sync
 
-MODEL_TYPE=${1:-train}
-uv run run.py --"$MODEL_TYPE"
+echo "Starting Python execution via uv run (Offline Mode Enabled)..."
+uv run run.py

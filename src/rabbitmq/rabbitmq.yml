@@ -1,0 +1,4 @@
+# rabbitmq.conf
+listeners.tcp.default = 5672
+default_user = admin
+default_pass = securepassword123

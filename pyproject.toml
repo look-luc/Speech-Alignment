@@ -9,15 +9,20 @@ authors = [
 requires-python = ">=3.12"
 dependencies = [
     "accelerate>=1.15.0",
+    "bitsandbytes>=0.50.2",
     "datasets==3.6.0",
     "django>=6.1.2",
     "evaluate>=0.4.6",
     "ffmpeg>=1.4",
     "librosa>=1.0.0",
+    "pandas>=3.1.0",
+    "peft>=0.21.2",
     "sacrebleu>=2.6.0",
     "scikit-learn>=1.9.1",
     "soundfile>=0.14.0",
+    "textgrid>=1.6.1",
     "torch>=2.14.1",
+    "torchaudio>=2.11.0",
     "torchcodec>=0.17.0",
     "transformers>=5.20.2",
 ]

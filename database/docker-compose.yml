@@ -1,0 +1,16 @@
+services:
+  custom_postgres_server:
+    image: postgres:15-alpine
+    container_name: force-aligner-multiling-server
+    environment:
+      POSTGRES_USER: lucdenardi
+      POSTGRES_PASSWORD: ${DATABASE}
+      POSTGRES_DB: forced-aligner-proj
+    ports:
+      - "127.0.0.1:5433:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    restart: always
+
+volumes:
+  postgres_data:
