@@ -1,6 +1,7 @@
 import gc
 import io
 
+import bitsandbytes as bnb
 import evaluate
 import soundfile as sf
 import torch
@@ -53,7 +54,7 @@ class Forced_Aligner:
             self.device = "cpu"
 
     def train_pipeline(self, num_epochs: int = 1, batch_size: int = 1, learning_rate: float = 5e-5):
-        optimizer = torch.optim.AdamW(self.aligner_model.parameters(), lr=learning_rate)
+        optimizer = bnb.optim.AdamW8bit(self.aligner_model.parameters(), lr=learning_rate)
         self.aligner_model.train()
 
         # Get a combined unique list of all languages you want to iterate over
