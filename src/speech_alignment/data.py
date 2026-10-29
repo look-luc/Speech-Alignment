@@ -68,9 +68,10 @@ def load_waxal_clean(language_subset: str = "ach_asr", split: str = "train") -> 
     return combined_dataset
 
 
-def load_single_language_data(language_name: str, split: str = "train") -> Dataset:
+def load_single_language_data(language_name: str, split: str = "train", max_samples: int = 3000) -> Dataset:
     """
-    Loads and harmonizes WaxalNLP and FLEURS data for a single specified language.
+    Loads, harmonizes, and caps WaxalNLP and FLEURS data for a single language,
+    filtering out overly long audio files to prevent OOM errors.
     """
     datasets_to_combine = []
     standard_columns = ["audio", "transcription", "language", "source"]
@@ -118,6 +119,12 @@ def load_single_language_data(language_name: str, split: str = "train") -> Datas
         raise ValueError(f"No datasets available for language: {language_name}")
 
     combined_dataset = concatenate_datasets(datasets_to_combine)
+
+    # 3. Optional: Subsample if the dataset is massive (caps memory and speeds up training epochs)
+    if len(combined_dataset) > max_samples:
+        print(f"Capping {language_name} from {len(combined_dataset)} down to {max_samples} samples.")
+        combined_dataset = combined_dataset.select(range(max_samples))
+
     print(f"Loaded {len(combined_dataset)} total samples for {language_name}.")
     return combined_dataset
 
