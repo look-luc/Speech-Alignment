@@ -13,6 +13,10 @@ https://docs.djangoproject.com/en/6.1/ref/settings/
 import os
 from pathlib import Path
 
+from dotenv import load_dotenv
+
+load_dotenv()
+
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -25,7 +29,7 @@ SECRET_KEY = os.getenv("SECRET_KEY", "django-insecure-key-for-dev")
 DATABASE_PASSWORD = str(os.getenv("DATABASE"))
 USER = str(os.getenv("USER"))
 HOST=str(os.getenv("HOST"))
-PORT = os.getenv("PORT")
+PORT = int(str(os.getenv("PORT")))
 
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
@@ -42,6 +46,7 @@ INSTALLED_APPS = [
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
+    'speech_alignment_interface.backend'
 ]
 
 MIDDLEWARE = [
@@ -55,11 +60,12 @@ MIDDLEWARE = [
 ]
 
 ROOT_URLCONF = 'speech_alignment_interface.urls'
+FRONTEND_DIR = BASE_DIR / "speech_alignment_interface/frontend"
 
 TEMPLATES = [
     {
         'BACKEND': 'django.template.backends.django.DjangoTemplates',
-        'DIRS': [],
+        'DIRS': [FRONTEND_DIR],
         'APP_DIRS': True,
         'OPTIONS': {
             'context_processors': [
@@ -70,6 +76,8 @@ TEMPLATES = [
         },
     },
 ]
+
+STATICFILES_DIRS = [FRONTEND_DIR]
 
 WSGI_APPLICATION = 'speech_alignment_interface.wsgi.application'
 
@@ -124,13 +132,3 @@ USE_TZ = True
 # https://docs.djangoproject.com/en/6.1/howto/static-files/
 
 STATIC_URL = 'static/'
-
-
-# Email
-# https://docs.djangoproject.com/en/6.1/topics/email/#topic-email-configuration
-
-MAILERS = {
-    'default': {
-        'BACKEND': 'django.core.mail.backends.console.EmailBackend',
-    },
-}

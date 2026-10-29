@@ -17,6 +17,7 @@ dependencies = [
     "librosa>=1.0.0",
     "pandas>=3.1.0",
     "peft>=0.21.2",
+    "python-dotenv>=1.2.4",
     "sacrebleu>=2.6.0",
     "scikit-learn>=1.9.1",
     "soundfile>=0.14.0",
