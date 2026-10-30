@@ -1,21 +1,25 @@
+import sys
+from unittest.mock import MagicMock
+
+# --- Block torchcodec to prevent C++ SingleStreamDecoder path errors ---
+sys.modules["torchcodec"] = MagicMock()
+sys.modules["torchcodec._core"] = MagicMock()
+
+import io
 import os
 
-import datasets.features.audio as audio_features
+import datasets
 import numpy as np
 import soundfile as sf
 import torch
 import torchaudio
 from datasets import Dataset, concatenate_datasets, load_dataset
 from datasets.features import Audio
-from huggingface_hub import snapshot_download
 from torch.utils.data import Dataset as TorchDataset
 
 
-# --- Fallback monkeypatch for load_with_torchcodec when torchcodec is uninstalled ---
+# --- Fallback decoder for soundfile / torchaudio ---
 def _fallback_decode_example(self, value, token_per_repo_id=None):
-    """
-    Replaces Hugging Face's torchcodec-based decoding with soundfile.
-    """
     if isinstance(value, str):
         path = value
     elif isinstance(value, dict):
@@ -23,7 +27,7 @@ def _fallback_decode_example(self, value, token_per_repo_id=None):
     else:
         path = getattr(value, "path", None)
 
-    if path:
+    if path and os.path.exists(path):
         speech, sampling_rate = sf.read(path)
         return {
             "path": path,
@@ -31,9 +35,7 @@ def _fallback_decode_example(self, value, token_per_repo_id=None):
             "sampling_rate": sampling_rate
         }
 
-    # Fallback if bytes are provided directly
     if isinstance(value, dict) and "bytes" in value and value["bytes"] is not None:
-        import io
         bytes_io = io.BytesIO(value["bytes"])
         speech, sampling_rate = sf.read(bytes_io)
         return {
@@ -44,7 +46,6 @@ def _fallback_decode_example(self, value, token_per_repo_id=None):
 
     raise ValueError(f"Could not decode audio value: {value}")
 
-# Safely override the decode method globally
 Audio.decode_example = _fallback_decode_example
 
 
@@ -64,68 +65,31 @@ FLEURS_LOW_MED = {
 }
 
 def load_waxal_clean(language_subset: str = "ach_asr", split: str = "train", target_samples: int = 3000) -> Dataset:
-    """
-    Loads WaxalNLP parquet files individually, casts their audio columns to a
-    standardized Audio feature schema to prevent CastErrors, and concatenates them safely.
-    """
     repo_id = "google/WaxalNLP"
-    repo_dir = snapshot_download(repo_id=repo_id, repo_type="dataset")
+    try:
+        ds = load_dataset(repo_id, language_subset, split=split, trust_remote_code=True)
+    except Exception as e:
+        raise FileNotFoundError(f"Failed to load dataset {repo_id} with subset '{language_subset}': {e}")
 
-    lang_code = language_subset.replace("_asr", "").replace("_tts", "")
+    if "__index_level_0__" in ds.column_names:
+        ds = ds.remove_columns(["__index_level_0__"])
+    if "text" in ds.column_names and "transcription" not in ds.column_names:
+        ds = ds.rename_column("text", "transcription")
+    if "locale" in ds.column_names and "language" not in ds.column_names:
+        ds = ds.rename_column("locale", "language")
 
-    parquet_files = []
-    for root, _, files in os.walk(repo_dir):
-        for file in files:
-            if file.endswith(".parquet") and lang_code in root and split in file:
-                parquet_files.append(os.path.join(root, file))
+    if "audio" in ds.column_names:
+        ds = ds.cast_column("audio", Audio(decode=False))
 
-    if not parquet_files:
-        raise FileNotFoundError(f"No parquet files found for language code '{lang_code}' and split '{split}'.")
+    if len(ds) > target_samples:
+        ds = ds.select(range(target_samples))
 
-    datasets_list = []
-    total_loaded = 0
-
-    for file_path in sorted(parquet_files):
-        try:
-            ds = Dataset.from_parquet(file_path)
-
-            # Standardize column names
-            if "__index_level_0__" in ds.column_names:
-                ds = ds.remove_columns(["__index_level_0__"])
-            if "text" in ds.column_names and "transcription" not in ds.column_names:
-                ds = ds.rename_column("text", "transcription")
-            if "locale" in ds.column_names and "language" not in ds.column_names:
-                ds = ds.rename_column("locale", "language")
-
-            # Force a uniform Audio feature schema across all shards
-            if "audio" in ds.column_names:
-                ds = ds.cast_column("audio", Audio(decode=False))
-
-            datasets_list.append(ds)
-            total_loaded += len(ds)
-
-            # Stop loading once target samples are reached to avoid offset overflow errors
-            if total_loaded >= target_samples:
-                break
-
-        except Exception as e:
-            print(f"Skipping incompatible parquet file {file_path}: {e}")
-
-    if not datasets_list:
-        raise FileNotFoundError(f"No valid parquet files could be loaded for {language_subset}.")
-
-    combined_dataset = concatenate_datasets(datasets_list)
-    return combined_dataset
+    return ds
 
 def load_single_language_data(language_name: str, split: str = "train", max_samples: int = 3000) -> Dataset:
-    """
-    Loads, harmonizes, and caps WaxalNLP and FLEURS data for a single language,
-    filtering out overly long audio files to prevent OOM errors.
-    """
     datasets_to_combine = []
     standard_columns = ["audio", "transcription", "language", "source"]
 
-    # 1. Load WaxalNLP for this language if available
     if language_name in WAXAL_LANG_CODE:
         code = WAXAL_LANG_CODE[language_name]
         subset = f"{code}_asr"
@@ -145,14 +109,12 @@ def load_single_language_data(language_name: str, split: str = "train", max_samp
         except Exception as e:
             print(f"Notice: No WaxalNLP data found for {language_name} ({e})")
 
-    # 2. Load FLEURS for this language if available
     if language_name in FLEURS_LOW_MED:
         code = FLEURS_LOW_MED[language_name]
         try:
             print(f"Loading FLEURS for {language_name} ({code})...")
             fleurs_ds = load_dataset("google/fleurs", code, split=split)
 
-            # Cast audio to decode=False to avoid torchcodec dependency
             if "audio" in fleurs_ds.column_names:
                 fleurs_ds = fleurs_ds.cast_column("audio", Audio(decode=False))
 
@@ -174,7 +136,6 @@ def load_single_language_data(language_name: str, split: str = "train", max_samp
 
     combined_dataset = concatenate_datasets(datasets_to_combine)
 
-    # 3. Subsample if the dataset exceeds max_samples
     if len(combined_dataset) > max_samples:
         print(f"Capping {language_name} from {len(combined_dataset)} down to {max_samples} samples.")
         combined_dataset = combined_dataset.select(range(max_samples))
@@ -196,12 +157,18 @@ class UnifiedSpeechDataset(TorchDataset):
         item = self.dataset[idx]
 
         audio_data = item["audio"]
-        if isinstance(audio_data, dict) and "path" in audio_data:
+        if isinstance(audio_data, dict) and "path" in audio_data and audio_data["path"]:
             speech_array, sr = torchaudio.load(audio_data["path"])
         elif isinstance(audio_data, str):
             speech_array, sr = torchaudio.load(audio_data)
+        elif isinstance(audio_data, dict) and "bytes" in audio_data and audio_data["bytes"] is not None:
+            bytes_io = io.BytesIO(audio_data["bytes"])
+            speech_array, sr = sf.read(bytes_io)
+            speech_array = torch.tensor(speech_array, dtype=torch.float32).unsqueeze(0)
         else:
             speech_array = torch.tensor(audio_data["array"], dtype=torch.float32)
+            if speech_array.ndim == 1:
+                speech_array = speech_array.unsqueeze(0)
             sr = audio_data["sampling_rate"]
 
         if sr != self.sampling_rate:
