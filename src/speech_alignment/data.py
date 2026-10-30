@@ -1,10 +1,54 @@
+import io
 import os
 
+import datasets
+import soundfile as sf
 import torch
 import torchaudio
 from datasets import Audio, Dataset, concatenate_datasets, load_dataset
 from huggingface_hub import snapshot_download
 from torch.utils.data import Dataset as TorchDataset
+
+
+# --- Fallback monkeypatch for load_with_torchcodec when torchcodec is uninstalled ---
+def _fallback_load_with_torchcodec(self, audio_column="audio", sampling_rate=None, **kwargs):
+    def decode_audio(batch):
+        audios = batch[audio_column]
+        decoded_arrays = []
+        decoded_srs = []
+        for audio_info in audios:
+            waveform_np = None
+            sr = sampling_rate or 16000
+            if isinstance(audio_info, dict):
+                if "array" in audio_info and audio_info["array"] is not None:
+                    waveform_np = audio_info["array"]
+                    sr = audio_info.get("sampling_rate", sr)
+                elif "bytes" in audio_info and audio_info["bytes"] is not None:
+                    waveform_np, sr = sf.read(io.BytesIO(audio_info["bytes"]))
+                elif "path" in audio_info and audio_info["path"] is not None:
+                    waveform_np, sr = sf.read(audio_info["path"])
+            elif isinstance(audio_info, str):
+                waveform_np, sr = sf.read(audio_info)
+
+            if waveform_np is not None:
+                arr = torch.tensor(waveform_np, dtype=torch.float32)
+                if arr.ndim > 1:
+                    arr = arr.mean(dim=0)
+                if sampling_rate and sr != sampling_rate:
+                    resampler = torchaudio.transforms.Resample(orig_freq=sr, new_freq=sampling_rate)
+                    arr = resampler(arr.unsqueeze(0)).squeeze(0)
+                decoded_arrays.append(arr.numpy())
+                decoded_srs.append(sampling_rate or sr)
+            else:
+                decoded_arrays.append(None)
+                decoded_srs.append(sr)
+        return {audio_column: [{"array": arr, "sampling_rate": sr} for arr, sr in zip(decoded_arrays, decoded_srs)]}
+
+    return self.map(decode_audio, batched=True, batch_size=100)
+
+if hasattr(datasets.Dataset, "load_with_torchcodec"):
+    datasets.Dataset.load_with_torchcodec = _fallback_load_with_torchcodec
+
 
 WAXAL_LANG_CODE = {
     "Acholi": "ach", "Luganda": "lug", "Masaaba": "mas", "Nyankole": "nyn",
@@ -22,6 +66,10 @@ FLEURS_LOW_MED = {
 }
 
 def load_waxal_clean(language_subset: str = "ach_asr", split: str = "train", target_samples: int = 3000) -> Dataset:
+    """
+    Loads WaxalNLP parquet files individually, casts their audio columns to a
+    standardized Audio feature schema to prevent CastErrors, and concatenates them safely.
+    """
     repo_id = "google/WaxalNLP"
     repo_dir = snapshot_download(repo_id=repo_id, repo_type="dataset")
 
@@ -43,6 +91,7 @@ def load_waxal_clean(language_subset: str = "ach_asr", split: str = "train", tar
         try:
             ds = Dataset.from_parquet(file_path)
 
+            # Standardize column names
             if "__index_level_0__" in ds.column_names:
                 ds = ds.remove_columns(["__index_level_0__"])
             if "text" in ds.column_names and "transcription" not in ds.column_names:
@@ -50,12 +99,14 @@ def load_waxal_clean(language_subset: str = "ach_asr", split: str = "train", tar
             if "locale" in ds.column_names and "language" not in ds.column_names:
                 ds = ds.rename_column("locale", "language")
 
+            # Force a uniform Audio feature schema across all shards
             if "audio" in ds.column_names:
                 ds = ds.cast_column("audio", Audio(decode=False))
 
             datasets_list.append(ds)
             total_loaded += len(ds)
 
+            # Stop loading once target samples are reached to avoid offset overflow errors
             if total_loaded >= target_samples:
                 break
 
@@ -82,7 +133,7 @@ def load_single_language_data(language_name: str, split: str = "train", max_samp
         subset = f"{code}_asr"
         try:
             print(f"Loading WaxalNLP for {language_name} ({subset})...")
-            waxal_ds = load_waxal_clean(language_subset=subset, split=split)
+            waxal_ds = load_waxal_clean(language_subset=subset, split=split, target_samples=max_samples)
             waxal_mapped = waxal_ds.map(
                 lambda b: {
                     "audio": b["audio"],
@@ -103,7 +154,7 @@ def load_single_language_data(language_name: str, split: str = "train", max_samp
             print(f"Loading FLEURS for {language_name} ({code})...")
             fleurs_ds = load_dataset("google/fleurs", code, split=split)
 
-            # --- FIX: Cast audio to decode=False to avoid torchcodec dependency ---
+            # Cast audio to decode=False to avoid torchcodec dependency
             if "audio" in fleurs_ds.column_names:
                 fleurs_ds = fleurs_ds.cast_column("audio", Audio(decode=False))
 

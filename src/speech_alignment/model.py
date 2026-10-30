@@ -231,8 +231,6 @@ class Forced_Aligner:
         batch_size: int = 4,
         output_dir: str = "./multiling_forced_aligner_model"
     ):
-        from data import FLEURS_LOW_MED, WAXAL_LANG_CODE, load_single_language_data
-
         bleu_metric = evaluate.load("sacrebleu")
         self.aligner_model.eval()
 

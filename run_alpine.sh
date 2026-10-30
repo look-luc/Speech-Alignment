@@ -46,6 +46,7 @@ export LD_LIBRARY_PATH=".venv/lib/python3.11/site-packages/nvidia/nccl/lib:$LD_L
 
 uv pip uninstall torchcodec
 uv remove torchcodec
+uv sync
 
 echo "Starting Python execution via uv run (Offline Mode Enabled)..."
 uv run run.py
