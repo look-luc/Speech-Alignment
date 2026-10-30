@@ -1,53 +1,7 @@
-import sys
-from unittest.mock import MagicMock
-
-# --- Block torchcodec to prevent C++ SingleStreamDecoder path errors ---
-sys.modules["torchcodec"] = MagicMock()
-sys.modules["torchcodec._core"] = MagicMock()
-
-import io
-import os
-
-import datasets
-import numpy as np
-import soundfile as sf
 import torch
 import torchaudio
 from datasets import Dataset, concatenate_datasets, load_dataset
-from datasets.features import Audio
 from torch.utils.data import Dataset as TorchDataset
-
-
-# --- Fallback decoder for soundfile / torchaudio ---
-def _fallback_decode_example(self, value, token_per_repo_id=None):
-    if isinstance(value, str):
-        path = value
-    elif isinstance(value, dict):
-        path = value.get("path") or value.get("file")
-    else:
-        path = getattr(value, "path", None)
-
-    if path and os.path.exists(path):
-        speech, sampling_rate = sf.read(path)
-        return {
-            "path": path,
-            "array": speech,
-            "sampling_rate": sampling_rate
-        }
-
-    if isinstance(value, dict) and "bytes" in value and value["bytes"] is not None:
-        bytes_io = io.BytesIO(value["bytes"])
-        speech, sampling_rate = sf.read(bytes_io)
-        return {
-            "path": value.get("path"),
-            "array": speech,
-            "sampling_rate": sampling_rate
-        }
-
-    raise ValueError(f"Could not decode audio value: {value}")
-
-Audio.decode_example = _fallback_decode_example
-
 
 WAXAL_LANG_CODE = {
     "Acholi": "ach", "Luganda": "lug", "Masaaba": "mas", "Nyankole": "nyn",
@@ -64,88 +18,79 @@ FLEURS_LOW_MED = {
     "occitan": "oc_fr",
 }
 
-def load_waxal_clean(language_subset: str = "ach_asr", split: str = "train", target_samples: int = 3000) -> Dataset:
-    repo_id = "google/WaxalNLP"
-    try:
-        ds = load_dataset(repo_id, language_subset, split=split, trust_remote_code=True)
-    except Exception as e:
-        raise FileNotFoundError(f"Failed to load dataset {repo_id} with subset '{language_subset}': {e}")
+def load_single_language_data(dataset_name=None, language=None, split="train", language_name=None):
+    """
+    Loads and standardizes dataset mapping and preprocessing
+    for either WaxalNLP or FLEURS datasets.
+    """
+    lang = language or language_name or dataset_name
+    if not lang:
+        raise ValueError("Must provide a language or dataset name.")
 
-    if "__index_level_0__" in ds.column_names:
-        ds = ds.remove_columns(["__index_level_0__"])
-    if "text" in ds.column_names and "transcription" not in ds.column_names:
-        ds = ds.rename_column("text", "transcription")
-    if "locale" in ds.column_names and "language" not in ds.column_names:
-        ds = ds.rename_column("locale", "language")
+    # 1. Check and Standardize Dataset Mapping for WaxalNLP
+    if lang in WAXAL_LANG_CODE:
+        lang_code = WAXAL_LANG_CODE[lang]
+        dataset = load_dataset("google/WaxalNLP", f"{lang_code}_asr", split=split)
 
-    if "audio" in ds.column_names:
-        ds = ds.cast_column("audio", Audio(decode=False))
+        if "__index_level_0__" in dataset.column_names:
+            dataset = dataset.remove_columns(["__index_level_0__"])
 
-    if len(ds) > target_samples:
-        ds = ds.select(range(target_samples))
+        if "text" in dataset.column_names:
+            dataset = dataset.rename_column("text", "transcription")
 
-    return ds
+        if "locale" in dataset.column_names:
+            dataset = dataset.rename_column("locale", "language")
 
-def load_single_language_data(language_name: str, split: str = "train", max_samples: int = 3000) -> Dataset:
-    datasets_to_combine = []
-    standard_columns = ["audio", "transcription", "language", "source"]
+        dataset = dataset.map(
+            lambda example: {
+                "audio": example["audio"],
+                "transcription": example["transcription"],
+                "language": example.get("language", lang),
+                "source": "waxal"
+            },
+            remove_columns=[col for col in dataset.column_names if col not in ["audio", "transcription", "language", "source"]]
+        )
 
-    if language_name in WAXAL_LANG_CODE:
-        code = WAXAL_LANG_CODE[language_name]
-        subset = f"{code}_asr"
-        try:
-            print(f"Loading WaxalNLP for {language_name} ({subset})...")
-            waxal_ds = load_waxal_clean(language_subset=subset, split=split, target_samples=max_samples)
-            waxal_mapped = waxal_ds.map(
-                lambda b: {
-                    "audio": b["audio"],
-                    "transcription": b["transcription"],
-                    "language": b.get("language", subset),
-                    "source": "waxal"
-                },
-                remove_columns=[col for col in waxal_ds.column_names if col not in standard_columns]
-            )
-            datasets_to_combine.append(waxal_mapped)
-        except Exception as e:
-            print(f"Notice: No WaxalNLP data found for {language_name} ({e})")
+    # 2. Check and Standardize Dataset Mapping for FLEURS
+    elif lang in FLEURS_LOW_MED:
+        lang_code = FLEURS_LOW_MED[lang]
+        dataset = load_dataset("google/fleurs", lang_code, split=split)
 
-    if language_name in FLEURS_LOW_MED:
-        code = FLEURS_LOW_MED[language_name]
-        try:
-            print(f"Loading FLEURS for {language_name} ({code})...")
-            fleurs_ds = load_dataset("google/fleurs", code, split=split)
+        if "raw_transcription" in dataset.column_names and "transcription" not in dataset.column_names:
+            dataset = dataset.rename_column("raw_transcription", "transcription")
 
-            if "audio" in fleurs_ds.column_names:
-                fleurs_ds = fleurs_ds.cast_column("audio", Audio(decode=False))
+        dataset = dataset.map(
+            lambda example: {
+                "audio": example["audio"],
+                "transcription": example["transcription"],
+                "language": lang,
+                "source": "fleurs"
+            },
+            remove_columns=[col for col in dataset.column_names if col not in ["audio", "transcription", "language", "source"]]
+        )
+    else:
+        # Fallback for custom or direct loading
+        dataset = load_dataset(dataset_name or "google/fleurs", lang, split=split)
+        if "raw_transcription" in dataset.column_names and "transcription" not in dataset.column_names:
+            dataset = dataset.rename_column("raw_transcription", "transcription")
+        if "text" in dataset.column_names and "transcription" not in dataset.column_names:
+            dataset = dataset.rename_column("text", "transcription")
 
-            fleurs_mapped = fleurs_ds.map(
-                lambda b: {
-                    "audio": b["audio"],
-                    "transcription": b["transcription"],
-                    "language": code,
-                    "source": "fleurs"
-                },
-                remove_columns=[col for col in fleurs_ds.column_names if col not in standard_columns]
-            )
-            datasets_to_combine.append(fleurs_mapped)
-        except Exception as e:
-            print(f"Notice: No FLEURS data found for {language_name} ({e})")
+        dataset = dataset.map(
+            lambda example: {
+                "audio": example.get("audio"),
+                "transcription": example.get("transcription", ""),
+                "language": lang,
+                "source": "custom"
+            },
+            remove_columns=[col for col in dataset.column_names if col not in ["audio", "transcription", "language", "source"]]
+        )
 
-    if not datasets_to_combine:
-        raise ValueError(f"No datasets available for language: {language_name}")
-
-    combined_dataset = concatenate_datasets(datasets_to_combine)
-
-    if len(combined_dataset) > max_samples:
-        print(f"Capping {language_name} from {len(combined_dataset)} down to {max_samples} samples.")
-        combined_dataset = combined_dataset.select(range(max_samples))
-
-    print(f"Loaded {len(combined_dataset)} total samples for {language_name}.")
-    return combined_dataset
+    return dataset
 
 
 class UnifiedSpeechDataset(TorchDataset):
-    def __init__(self, hf_dataset: Dataset, processor, sampling_rate: int = 16000):
+    def __init__(self, hf_dataset: Dataset, processor=None, sampling_rate: int = 16000):
         self.dataset = hf_dataset
         self.processor = processor
         self.sampling_rate = sampling_rate
@@ -154,40 +99,5 @@ class UnifiedSpeechDataset(TorchDataset):
         return len(self.dataset)
 
     def __getitem__(self, idx: int) -> dict:
-        item = self.dataset[idx]
-
-        audio_data = item["audio"]
-        if isinstance(audio_data, dict) and "path" in audio_data and audio_data["path"]:
-            speech_array, sr = torchaudio.load(audio_data["path"])
-        elif isinstance(audio_data, str):
-            speech_array, sr = torchaudio.load(audio_data)
-        elif isinstance(audio_data, dict) and "bytes" in audio_data and audio_data["bytes"] is not None:
-            bytes_io = io.BytesIO(audio_data["bytes"])
-            speech_array, sr = sf.read(bytes_io)
-            speech_array = torch.tensor(speech_array, dtype=torch.float32).unsqueeze(0)
-        else:
-            speech_array = torch.tensor(audio_data["array"], dtype=torch.float32)
-            if speech_array.ndim == 1:
-                speech_array = speech_array.unsqueeze(0)
-            sr = audio_data["sampling_rate"]
-
-        if sr != self.sampling_rate:
-            resampler = torchaudio.transforms.Resample(orig_freq=sr, new_freq=self.sampling_rate)
-            speech_array = resampler(speech_array)
-
-        if speech_array.shape[0] > 1:
-            speech_array = torch.mean(speech_array, dim=0, keepdim=True)
-
-        input_features = self.processor(
-            speech_array.squeeze().numpy(),
-            sampling_rate=self.sampling_rate,
-            return_tensors="pt"
-        ).input_features[0]
-
-        labels = self.processor.tokenizer(item["transcription"]).input_ids
-
-        return {
-            "input_features": input_features,
-            "labels": torch.tensor(labels, dtype=torch.long),
-            "source": item["source"]
-        }
+        # Return raw dataset item so collate_fn can handle audio decoding, chunking, and text formatting.
+        return self.dataset[idx]
