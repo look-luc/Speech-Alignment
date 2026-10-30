@@ -26,6 +26,7 @@ dependencies = [
     "torchaudio>=2.11.0",
     "transformers>=5.20.2",
     "av>=19.0.2",
+    "torchcodec>=0.17.0",
 ]
 
 [project.scripts]

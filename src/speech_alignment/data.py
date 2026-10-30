@@ -1,53 +1,51 @@
-import io
 import os
 
-import datasets
+import datasets.features.audio as audio_features
+import numpy as np
 import soundfile as sf
 import torch
 import torchaudio
-from datasets import Audio, Dataset, concatenate_datasets, load_dataset
+from datasets import Dataset, concatenate_datasets, load_dataset
+from datasets.features import Audio
 from huggingface_hub import snapshot_download
 from torch.utils.data import Dataset as TorchDataset
 
 
 # --- Fallback monkeypatch for load_with_torchcodec when torchcodec is uninstalled ---
-def _fallback_load_with_torchcodec(self, audio_column="audio", sampling_rate=None, **kwargs):
-    def decode_audio(batch):
-        audios = batch[audio_column]
-        decoded_arrays = []
-        decoded_srs = []
-        for audio_info in audios:
-            waveform_np = None
-            sr = sampling_rate or 16000
-            if isinstance(audio_info, dict):
-                if "array" in audio_info and audio_info["array"] is not None:
-                    waveform_np = audio_info["array"]
-                    sr = audio_info.get("sampling_rate", sr)
-                elif "bytes" in audio_info and audio_info["bytes"] is not None:
-                    waveform_np, sr = sf.read(io.BytesIO(audio_info["bytes"]))
-                elif "path" in audio_info and audio_info["path"] is not None:
-                    waveform_np, sr = sf.read(audio_info["path"])
-            elif isinstance(audio_info, str):
-                waveform_np, sr = sf.read(audio_info)
+def _fallback_decode_example(self, value, token_per_repo_id=None):
+    """
+    Replaces Hugging Face's torchcodec-based decoding with soundfile.
+    """
+    if isinstance(value, str):
+        path = value
+    elif isinstance(value, dict):
+        path = value.get("path") or value.get("file")
+    else:
+        path = getattr(value, "path", None)
 
-            if waveform_np is not None:
-                arr = torch.tensor(waveform_np, dtype=torch.float32)
-                if arr.ndim > 1:
-                    arr = arr.mean(dim=0)
-                if sampling_rate and sr != sampling_rate:
-                    resampler = torchaudio.transforms.Resample(orig_freq=sr, new_freq=sampling_rate)
-                    arr = resampler(arr.unsqueeze(0)).squeeze(0)
-                decoded_arrays.append(arr.numpy())
-                decoded_srs.append(sampling_rate or sr)
-            else:
-                decoded_arrays.append(None)
-                decoded_srs.append(sr)
-        return {audio_column: [{"array": arr, "sampling_rate": sr} for arr, sr in zip(decoded_arrays, decoded_srs)]}
+    if path:
+        speech, sampling_rate = sf.read(path)
+        return {
+            "path": path,
+            "array": speech,
+            "sampling_rate": sampling_rate
+        }
 
-    return self.map(decode_audio, batched=True, batch_size=100)
+    # Fallback if bytes are provided directly
+    if isinstance(value, dict) and "bytes" in value and value["bytes"] is not None:
+        import io
+        bytes_io = io.BytesIO(value["bytes"])
+        speech, sampling_rate = sf.read(bytes_io)
+        return {
+            "path": value.get("path"),
+            "array": speech,
+            "sampling_rate": sampling_rate
+        }
 
-if hasattr(datasets.Dataset, "load_with_torchcodec"):
-    datasets.Dataset.load_with_torchcodec = _fallback_load_with_torchcodec
+    raise ValueError(f"Could not decode audio value: {value}")
+
+# Safely override the decode method globally
+Audio.decode_example = _fallback_decode_example
 
 
 WAXAL_LANG_CODE = {

@@ -335,9 +335,12 @@ class Forced_Aligner:
                 bleu_score = bleu_result["score"]
 
         print("=" * 60)
-        print("| Language-by-Language Evaluation Completed Successfully |")
-        print(f"| Total Samples Processed Across All Languages: {len(all_pred_texts)} |")
-        print(f"| Overall Transcript Reference BLEU: {bleu_score:.4f} |")
+        left = 60-len("| Language-by-Language Evaluation Completed Successfully")
+        print("| Language-by-Language Evaluation Completed Successfully" + " "*left + "|")
+        left = 60-len(f"| Total Samples Processed Across All Languages: {len(all_pred_texts)}")
+        print(f"| Total Samples Processed Across All Languages: {len(all_pred_texts)}" + " "*left + "|")
+        left = 60-len(f"Overall Transcript Reference BLEU: {bleu_score:.4f}")
+        print(f"| Overall Transcript Reference BLEU: {bleu_score:.4f}" + " "*left + "|")
         print("=" * 60)
 
         print(f"Saving model and processor to {output_dir}...")

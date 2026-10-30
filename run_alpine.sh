@@ -19,8 +19,15 @@ if [ -f .env ]; then
     export HF_TOKEN=$(grep -v '^#' .env | grep 'HUGGINGFACE_TOKEN=' | cut -d '=' -f2-)
 fi
 
+export SCRATCH="${SCRATCH:-/scratch/alpine/$USER}"
+export HF_HOME="/scratch/alpine/$USER/hf_cache"
+export HF_DATASETS_CACHE="/scratch/alpine/$USER/huggingface_cache/datasets"
+export HF_HUB_CACHE="/scratch/alpine/$USER/huggingface_cache/hub"
 export TRANSFORMERS_CACHE="/scratch/alpine/$USER/hf_cache/transformers"
-mkdir -p "$HF_HOME" "$HF_DATASETS_CACHE" "$TRANSFORMERS_CACHE" "$EVALUATE_CACHE_DIR"
+export EVALUATE_CACHE_DIR="/scratch/alpine/$USER/hf_cache/evaluate"
+export TOKENIZERS_PARALLELISM=false
+
+mkdir -p "$HF_HOME" "$HF_DATASETS_CACHE" "$HF_HUB_CACHE" "$TRANSFORMERS_CACHE" "$EVALUATE_CACHE_DIR"
 
 export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK
 export OPENBLAS_NUM_THREADS=1
@@ -31,22 +38,10 @@ export TMPDIR="/tmp"
 export TMP="/tmp"
 export TEMP="/tmp"
 
-export SCRATCH="${SCRATCH:-/scratch/alpine/$USER}"
-export HF_HOME="/scratch/alpine/$USER/hf_cache"
-export HF_DATASETS_CACHE="/scratch/alpine/$USER/huggingface_cache/datasets"
-export HF_HUB_CACHE="/scratch/alpine/$USER/huggingface_cache/hub"
-export EVALUATE_CACHE_DIR="/scratch/alpine/$USER/hf_cache/evaluate"
-export TOKENIZERS_PARALLELISM=false
-
 module purge
-module load ffmpeg
-module load uv
-module load ffmpeg
+module load miniforge
+conda activate audio_env
+export LD_LIBRARY_PATH="$CONDA_PREFIX/lib:$LD_LIBRARY_PATH"
 
-export LD_LIBRARY_PATH=".venv/lib/python3.11/site-packages/nvidia/nccl/lib:$LD_LIBRARY_PATH"
-
-uv pip uninstall torchcodec
-uv sync
-
-echo "Starting Python execution via uv run (Offline Mode Enabled)..."
+echo "Starting Python execution via uv run..."
 uv run run.py
