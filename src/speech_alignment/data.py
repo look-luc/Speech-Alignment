@@ -1,10 +1,8 @@
-import gc
 import os
 
-import pandas as pd
 import torch
 import torchaudio
-from datasets import Dataset, concatenate_datasets, load_dataset
+from datasets import Audio, Dataset, concatenate_datasets, load_dataset
 from huggingface_hub import snapshot_download
 from torch.utils.data import Dataset as TorchDataset
 
@@ -23,8 +21,11 @@ FLEURS_LOW_MED = {
     "occitan": "oc_fr",
 }
 
-
 def load_waxal_clean(language_subset: str = "ach_asr", split: str = "train") -> Dataset:
+    """
+    Loads WaxalNLP parquet files individually, casts their audio columns to a
+    standardized Audio feature schema to prevent CastErrors, and concatenates them.
+    """
     repo_id = "google/WaxalNLP"
     repo_dir = snapshot_download(repo_id=repo_id, repo_type="dataset")
 
@@ -41,32 +42,30 @@ def load_waxal_clean(language_subset: str = "ach_asr", split: str = "train") -> 
 
     datasets_list = []
     for file_path in sorted(parquet_files):
-        # Read into Pandas
-        df = pd.read_parquet(file_path)
+        try:
+            ds = Dataset.from_parquet(file_path)
 
-        if "__index_level_0__" in df.columns:
-            df = df.drop(columns=["__index_level_0__"])
+            # Standardize column names
+            if "__index_level_0__" in ds.column_names:
+                ds = ds.remove_columns(["__index_level_0__"])
+            if "text" in ds.column_names and "transcription" not in ds.column_names:
+                ds = ds.rename_column("text", "transcription")
+            if "locale" in ds.column_names and "language" not in ds.column_names:
+                ds = ds.rename_column("locale", "language")
 
-        if "text" in df.columns and "transcription" not in df.columns:
-            df = df.rename(columns={"text": "transcription"})
-        if "locale" in df.columns and "language" not in df.columns:
-            df = df.rename(columns={"locale": "language"})
+            # Force a uniform Audio feature schema across all shards
+            if "audio" in ds.column_names:
+                ds = ds.cast_column("audio", Audio(decode=False))
 
-        ds = Dataset.from_pandas(df)
-        datasets_list.append(ds)
+            datasets_list.append(ds)
+        except Exception as e:
+            print(f"Skipping incompatible parquet file {file_path}: {e}")
 
-        # Explicitly delete the intermediate dataframe and free memory
-        del df
-        gc.collect()
+    if not datasets_list:
+        raise FileNotFoundError(f"No valid parquet files could be loaded for {language_subset}.")
 
     combined_dataset = concatenate_datasets(datasets_list)
-
-    # Clean up the list references
-    del datasets_list
-    gc.collect()
-
     return combined_dataset
-
 
 def load_single_language_data(language_name: str, split: str = "train", max_samples: int = 3000) -> Dataset:
     """
@@ -120,7 +119,7 @@ def load_single_language_data(language_name: str, split: str = "train", max_samp
 
     combined_dataset = concatenate_datasets(datasets_to_combine)
 
-    # 3. Optional: Subsample if the dataset is massive (caps memory and speeds up training epochs)
+    # 3. Subsample if the dataset exceeds max_samples
     if len(combined_dataset) > max_samples:
         print(f"Capping {language_name} from {len(combined_dataset)} down to {max_samples} samples.")
         combined_dataset = combined_dataset.select(range(max_samples))
@@ -170,9 +169,3 @@ class UnifiedSpeechDataset(TorchDataset):
             "labels": torch.tensor(labels, dtype=torch.long),
             "source": item["source"]
         }
-
-
-if __name__ == "__main__":
-    combined_ds = load_all_speech_data(split="train")
-    print("Sample 0 Source:", combined_ds[0]["source"])
-    print("Sample -1 Source:", combined_ds[-1]["source"])
