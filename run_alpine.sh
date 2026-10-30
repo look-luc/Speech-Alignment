@@ -41,11 +41,11 @@ export TOKENIZERS_PARALLELISM=false
 module purge
 module load ffmpeg
 module load uv
+module load ffmpeg
 
 export LD_LIBRARY_PATH=".venv/lib/python3.11/site-packages/nvidia/nccl/lib:$LD_LIBRARY_PATH"
 
 uv pip uninstall torchcodec
-uv remove torchcodec
 uv sync
 
 echo "Starting Python execution via uv run (Offline Mode Enabled)..."

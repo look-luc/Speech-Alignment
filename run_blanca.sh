@@ -35,6 +35,7 @@ cd /projects/$USER/Speech-Alignment
 
 module load uv
 module load python
+module load ffmpeg
 
 uv sync
 
