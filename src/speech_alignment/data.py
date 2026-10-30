@@ -21,11 +21,7 @@ FLEURS_LOW_MED = {
     "occitan": "oc_fr",
 }
 
-def load_waxal_clean(language_subset: str = "ach_asr", split: str = "train") -> Dataset:
-    """
-    Loads WaxalNLP parquet files individually, casts their audio columns to a
-    standardized Audio feature schema to prevent CastErrors, and concatenates them.
-    """
+def load_waxal_clean(language_subset: str = "ach_asr", split: str = "train", target_samples: int = 3000) -> Dataset:
     repo_id = "google/WaxalNLP"
     repo_dir = snapshot_download(repo_id=repo_id, repo_type="dataset")
 
@@ -41,11 +37,12 @@ def load_waxal_clean(language_subset: str = "ach_asr", split: str = "train") -> 
         raise FileNotFoundError(f"No parquet files found for language code '{lang_code}' and split '{split}'.")
 
     datasets_list = []
+    total_loaded = 0
+
     for file_path in sorted(parquet_files):
         try:
             ds = Dataset.from_parquet(file_path)
 
-            # Standardize column names
             if "__index_level_0__" in ds.column_names:
                 ds = ds.remove_columns(["__index_level_0__"])
             if "text" in ds.column_names and "transcription" not in ds.column_names:
@@ -53,11 +50,15 @@ def load_waxal_clean(language_subset: str = "ach_asr", split: str = "train") -> 
             if "locale" in ds.column_names and "language" not in ds.column_names:
                 ds = ds.rename_column("locale", "language")
 
-            # Force a uniform Audio feature schema across all shards
             if "audio" in ds.column_names:
                 ds = ds.cast_column("audio", Audio(decode=False))
 
             datasets_list.append(ds)
+            total_loaded += len(ds)
+
+            if total_loaded >= target_samples:
+                break
+
         except Exception as e:
             print(f"Skipping incompatible parquet file {file_path}: {e}")
 
@@ -101,6 +102,11 @@ def load_single_language_data(language_name: str, split: str = "train", max_samp
         try:
             print(f"Loading FLEURS for {language_name} ({code})...")
             fleurs_ds = load_dataset("google/fleurs", code, split=split)
+
+            # --- FIX: Cast audio to decode=False to avoid torchcodec dependency ---
+            if "audio" in fleurs_ds.column_names:
+                fleurs_ds = fleurs_ds.cast_column("audio", Audio(decode=False))
+
             fleurs_mapped = fleurs_ds.map(
                 lambda b: {
                     "audio": b["audio"],
