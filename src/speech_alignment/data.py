@@ -4,7 +4,7 @@ from torch.utils.data import Dataset as TorchDataset
 
 WAXAL_LANG_CODE = {
     "Acholi": "ach", "Luganda": "lug", "Masaaba": "mas", "Nyankole": "nyn",
-    "Soga": "sog", "Akan": "aka", "Ewe": "ewe", "Dagbani": "dag",
+    "Soga": "sog", "Akan": "aka", "Ikposo": "kpo", "Dagbani": "dag",
 }
 
 FLEURS_LOW_MED = {
