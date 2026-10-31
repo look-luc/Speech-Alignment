@@ -7,7 +7,7 @@ import soundfile as sf
 import torch
 import torchaudio.functional as F
 from peft import LoraConfig, TaskType, get_peft_model
-from torch.amp import GradScaler, autocast
+from torch.amp import autocast
 from torch.utils.data import DataLoader
 from transformers import (
     AutoModelForTokenClassification,
@@ -18,6 +18,7 @@ from src.speech_alignment.data import (
     FLEURS_LOW_MED,
     WAXAL_LANG_CODE,
     UnifiedSpeechDataset,
+    load_all_languages_dataset,
     load_single_language_data,
 )
 
@@ -56,93 +57,85 @@ class Forced_Aligner:
 
     def train_pipeline(
         self,
-        num_epochs: int = 2,
+        num_epochs: int = 1,
         batch_size: int = 2,
         learning_rate: float = 5e-5
     ):
-        print("\n=== Starting Training Pipeline ===")
+        print("\n=== Starting Global Multi-Lingual Training Pipeline ===")
         optimizer = bnb.optim.AdamW8bit(self.aligner_model.parameters(), lr=learning_rate)
-        # REMOVED: scaler = GradScaler("cuda") — not needed for bfloat16
         self.aligner_model.train()
 
-        all_languages = sorted(list(set(list(WAXAL_LANG_CODE.keys()) + list(FLEURS_LOW_MED.keys()))))
+        try:
+            # Load all languages into a single combined dataset and shuffle globally
+            raw_ds = load_all_languages_dataset(split="train")
+            raw_ds = raw_ds.shuffle(seed=42)
+            train_dataset = UnifiedSpeechDataset(raw_ds, self.aligner_processor)
+
+            train_loader = DataLoader(
+                train_dataset,
+                batch_size=batch_size,
+                shuffle=True,
+                collate_fn=self.collate_fn,
+                num_workers=0,
+                pin_memory=True
+            )
+        except Exception as e:
+            print(f"Failed to initialize unified training dataset: {e}")
+            return
 
         for epoch in range(num_epochs):
-            print(f"\n=== Epoch {epoch+1} / {num_epochs} ===")
+            print(f"\n=== Epoch {epoch+1} / {num_epochs} (Total Batches: {len(train_loader)}) ===")
+            total_loss = 0.0
+            step_count = 0
 
-            for lang_name in all_languages:
-                print(f"\n--- Training Language: {lang_name} ---")
-
-                try:
-                    raw_ds = load_single_language_data(language_name=lang_name, split="train")
-                    train_dataset = UnifiedSpeechDataset(raw_ds, self.aligner_processor)
-
-                    train_loader = DataLoader(
-                        train_dataset,
-                        batch_size=batch_size,
-                        shuffle=True,
-                        collate_fn=self.collate_fn,
-                        num_workers=0,
-                        pin_memory=True
-                    )
-
-                    total_loss = 0.0
-                    step_count = 0
-
-                    for step, batch in enumerate(train_loader):
-                        if batch is None:
-                            continue
-
-                        audio_arrays = batch["audio_arrays"]
-                        sampling_rate = batch["sampling_rate"]
-                        transcript_texts = batch["texts"]
-
-                        processed_inputs = self.aligner_processor(
-                            audio=audio_arrays,
-                            sampling_rate=sampling_rate,
-                            text=transcript_texts,
-                            padding=True,
-                            return_tensors="pt"
-                        ).to(self.device)
-
-                        model_dtype = self.aligner_model.dtype
-                        processed_inputs = {
-                            k: v.to(dtype=model_dtype) if v.is_floating_point() else v
-                            for k, v in processed_inputs.items()
-                        }
-
-                        labels = torch.zeros_like(processed_inputs["input_ids"], dtype=torch.long)
-                        labels[processed_inputs["attention_mask"] == 0] = -100
-
-                        optimizer.zero_grad()
-
-                        # Forward pass with mixed precision bfloat16
-                        with autocast("cuda", dtype=torch.bfloat16):
-                            outputs = self.aligner_model(**processed_inputs, labels=labels)
-                            loss = outputs.loss
-
-                        if loss is not None and not torch.isnan(loss):
-                            # Standard backward and step without GradScaler for bfloat16
-                            loss.backward()
-                            optimizer.step()
-
-                            total_loss += loss.item()
-                            step_count += 1
-                            if step_count % 10 == 0:
-                                print(f"[{lang_name}] Step {step_count} | Running Loss: {loss.item():.4f}")
-
-                    if step_count > 0:
-                        print(f"[{lang_name}] Completed | Average Loss: {total_loss / step_count:.4f}")
-                    else:
-                        print(f"[{lang_name}] Skipped: No valid training steps completed.")
-
-                    del raw_ds, train_dataset, train_loader
-                    gc.collect()
-                    torch.cuda.empty_cache()
-
-                except Exception as e:
-                    print(f"Skipping {lang_name} due to loading/training error: {e}")
+            for step, batch in enumerate(train_loader):
+                if batch is None:
                     continue
+
+                audio_arrays = batch["audio_arrays"]
+                sampling_rate = batch["sampling_rate"]
+                transcript_texts = batch["texts"]
+
+                processed_inputs = self.aligner_processor(
+                    audio=audio_arrays,
+                    sampling_rate=sampling_rate,
+                    text=transcript_texts,
+                    padding=True,
+                    return_tensors="pt"
+                ).to(self.device)
+
+                model_dtype = self.aligner_model.dtype
+                processed_inputs = {
+                    k: v.to(dtype=model_dtype) if v.is_floating_point() else v
+                    for k, v in processed_inputs.items()
+                }
+
+                labels = torch.zeros_like(processed_inputs["input_ids"], dtype=torch.long)
+                labels[processed_inputs["attention_mask"] == 0] = -100
+
+                optimizer.zero_grad()
+
+                with autocast("cuda", dtype=torch.bfloat16):
+                    outputs = self.aligner_model(**processed_inputs, labels=labels)
+                    loss = outputs.loss
+
+                if loss is not None and not torch.isnan(loss):
+                    loss.backward()
+                    optimizer.step()
+
+                    total_loss += loss.item()
+                    step_count += 1
+                    if step_count % 10 == 0:
+                        print(f"Step {step_count}/{len(train_loader)} | Running Loss: {loss.item()}")
+
+            if step_count > 0:
+                print(f"Epoch {epoch+1} Completed | Average Loss: {total_loss / step_count}")
+            else:
+                print(f"Epoch {epoch+1} Completed | No valid training steps completed.")
+
+        del raw_ds, train_dataset, train_loader
+        gc.clear() if hasattr(gc, 'clear') else gc.collect()
+        torch.cuda.empty_cache()
 
     def collate_fn(self, batch):
         audio_arrays = []

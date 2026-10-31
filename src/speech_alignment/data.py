@@ -1,4 +1,4 @@
-from datasets import load_dataset
+from datasets import Audio, concatenate_datasets, load_dataset
 from datasets.table import CastError
 from torch.utils.data import Dataset as TorchDataset
 
@@ -20,7 +20,7 @@ FLEURS_LOW_MED = {
 def load_single_language_data(dataset_name=None, language=None, split="train", language_name=None):
     """
     Loads and standardizes dataset mapping and preprocessing
-    for either WaxalNLP or FLEURS datasets, with robust fallback for schema/CastErrors.
+    for either WaxalNLP or FLEURS datasets, with robust fallback for schema/CastErrors[cite: 26].
     """
     lang = language or language_name or dataset_name
     if not lang:
@@ -30,7 +30,7 @@ def load_single_language_data(dataset_name=None, language=None, split="train", l
         lang_code = WAXAL_LANG_CODE[lang]
         try:
             dataset = load_dataset("google/WaxalNLP", f"{lang_code}_asr", split=split)
-        except (CastError, Exception) as e:
+        except Exception as e:
             print(f"Encountered schema issue loading {lang} ({e}), attempting reload with verification bypass...")
             dataset = load_dataset("google/WaxalNLP", f"{lang_code}_asr", split=split, verification_mode="no_checks")
 
@@ -86,7 +86,39 @@ def load_single_language_data(dataset_name=None, language=None, split="train", l
             remove_columns=[col for col in dataset.column_names if col not in ["audio", "transcription", "language", "source"]]
         )
 
+    # Unify audio column features across all datasets so concatenation succeeds
+    try:
+        dataset = dataset.cast_column("audio", Audio(sampling_rate=16000))
+    except Exception:
+        pass
+
     return dataset
+
+
+def load_all_languages_dataset(split="train"):
+    """
+    Loads, standardizes, and concatenates all configured languages
+    into a single unified Hugging Face dataset.
+    """
+    all_languages = sorted(list(set(list(WAXAL_LANG_CODE.keys()) + list(FLEURS_LOW_MED.keys()))))
+    dataset_list = []
+
+    print("Loading and combining datasets for all languages...")
+    for lang_name in all_languages:
+        try:
+            ds = load_single_language_data(language_name=lang_name, split=split)
+            if ds is not None and len(ds) > 0:
+                dataset_list.append(ds)
+                print(f"Successfully loaded {lang_name} ({len(ds)} samples).")
+        except Exception as e:
+            print(f"Skipping {lang_name} due to loading error: {e}")
+            continue
+
+    if not dataset_list:
+        raise ValueError("No language datasets could be loaded successfully.")
+
+    combined_dataset = concatenate_datasets(dataset_list)
+    return combined_dataset
 
 
 class UnifiedSpeechDataset(TorchDataset):
