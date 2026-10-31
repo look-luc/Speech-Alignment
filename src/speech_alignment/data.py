@@ -1,6 +1,5 @@
-import torch
-import torchaudio
-from datasets import Dataset, concatenate_datasets, load_dataset
+from datasets import load_dataset
+from datasets.table import CastError
 from torch.utils.data import Dataset as TorchDataset
 
 WAXAL_LANG_CODE = {
@@ -21,16 +20,19 @@ FLEURS_LOW_MED = {
 def load_single_language_data(dataset_name=None, language=None, split="train", language_name=None):
     """
     Loads and standardizes dataset mapping and preprocessing
-    for either WaxalNLP or FLEURS datasets.
+    for either WaxalNLP or FLEURS datasets, with robust fallback for schema/CastErrors.
     """
     lang = language or language_name or dataset_name
     if not lang:
         raise ValueError("Must provide a language or dataset name.")
 
-    # 1. Check and Standardize Dataset Mapping for WaxalNLP
     if lang in WAXAL_LANG_CODE:
         lang_code = WAXAL_LANG_CODE[lang]
-        dataset = load_dataset("google/WaxalNLP", f"{lang_code}_asr", split=split)
+        try:
+            dataset = load_dataset("google/WaxalNLP", f"{lang_code}_asr", split=split)
+        except (CastError, Exception) as e:
+            print(f"Encountered schema issue loading {lang} ({e}), attempting reload with verification bypass...")
+            dataset = load_dataset("google/WaxalNLP", f"{lang_code}_asr", split=split, verification_mode="no_checks")
 
         if "__index_level_0__" in dataset.column_names:
             dataset = dataset.remove_columns(["__index_level_0__"])
@@ -51,7 +53,6 @@ def load_single_language_data(dataset_name=None, language=None, split="train", l
             remove_columns=[col for col in dataset.column_names if col not in ["audio", "transcription", "language", "source"]]
         )
 
-    # 2. Check and Standardize Dataset Mapping for FLEURS
     elif lang in FLEURS_LOW_MED:
         lang_code = FLEURS_LOW_MED[lang]
         dataset = load_dataset("google/fleurs", lang_code, split=split)
@@ -69,7 +70,6 @@ def load_single_language_data(dataset_name=None, language=None, split="train", l
             remove_columns=[col for col in dataset.column_names if col not in ["audio", "transcription", "language", "source"]]
         )
     else:
-        # Fallback for custom or direct loading
         dataset = load_dataset(dataset_name or "google/fleurs", lang, split=split)
         if "raw_transcription" in dataset.column_names and "transcription" not in dataset.column_names:
             dataset = dataset.rename_column("raw_transcription", "transcription")
@@ -90,7 +90,7 @@ def load_single_language_data(dataset_name=None, language=None, split="train", l
 
 
 class UnifiedSpeechDataset(TorchDataset):
-    def __init__(self, hf_dataset: Dataset, processor=None, sampling_rate: int = 16000):
+    def __init__(self, hf_dataset, processor=None, sampling_rate: int = 16000):
         self.dataset = hf_dataset
         self.processor = processor
         self.sampling_rate = sampling_rate
@@ -99,5 +99,4 @@ class UnifiedSpeechDataset(TorchDataset):
         return len(self.dataset)
 
     def __getitem__(self, idx: int) -> dict:
-        # Return raw dataset item so collate_fn can handle audio decoding, chunking, and text formatting.
         return self.dataset[idx]

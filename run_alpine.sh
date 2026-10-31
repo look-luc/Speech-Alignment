@@ -15,8 +15,9 @@
 export PYTHONUNBUFFERED=1
 cd /projects/$USER/Speech-Alignment
 
+# Load environment variables from .env correctly supporting both HF_TOKEN and HUGGINGFACE_TOKEN
 if [ -f .env ]; then
-    export HF_TOKEN=$(grep -v '^#' .env | grep 'HUGGINGFACE_TOKEN=' | cut -d '=' -f2-)
+    export HF_TOKEN=$(grep -v '^#' .env | grep -E '^(HF_TOKEN|HUGGINGFACE_TOKEN)=' | head -n 1 | cut -d '=' -f2-)
 fi
 
 export SCRATCH="${SCRATCH:-/scratch/alpine/$USER}"
@@ -40,7 +41,11 @@ export TEMP="/tmp"
 
 module purge
 module load miniforge
-conda activate audio_env
+
+eval "$(conda shell.bash hook)"
+
+conda activate audio_env || echo "No virtual environment exists called audio_env"
+
 export LD_LIBRARY_PATH="$CONDA_PREFIX/lib:$LD_LIBRARY_PATH"
 
 echo "Starting Python execution via uv run..."
