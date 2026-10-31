@@ -1,10 +1,13 @@
 import gc
 import io
 
+import bitsandbytes as bnb
 import evaluate
 import soundfile as sf
 import torch
 import torchaudio.functional as F
+from peft import LoraConfig, TaskType, get_peft_model
+from torch.amp import GradScaler, autocast
 from torch.utils.data import DataLoader
 from transformers import (
     AutoModelForTokenClassification,
@@ -25,12 +28,24 @@ class Forced_Aligner:
         print(f"Loading processor and pre-trained model: {self.aligner_model_id}...")
         self.aligner_processor = AutoProcessor.from_pretrained(self.aligner_model_id)
 
-        self.aligner_model = AutoModelForTokenClassification.from_pretrained(
+        base_model = AutoModelForTokenClassification.from_pretrained(
             self.aligner_model_id,
             dtype=torch.bfloat16,
             device_map="auto"
         )
-        self.aligner_model.eval()
+
+        base_model.gradient_checkpointing_enable()
+
+        peft_config = LoraConfig(
+            task_type=TaskType.TOKEN_CLS,
+            inference_mode=False,
+            r=8,
+            lora_alpha=32,
+            lora_dropout=0.05,
+            target_modules=["q_proj", "v_proj", "k_proj", "out_proj"]
+        )
+        self.aligner_model = get_peft_model(base_model, peft_config)
+        self.aligner_model.print_trainable_parameters()
 
         if torch.cuda.is_available():
             self.device = "cuda"
@@ -39,15 +54,95 @@ class Forced_Aligner:
         else:
             self.device = "cpu"
 
-    def train_pipeline(self, *args, **kwargs):
-        """
-        Note: Qwen3-ForcedAligner-0.6B-hf is a pre-trained NAR timestamp predictor
-        designed for direct inference and forced alignment, not standard token classification fine-tuning.
-        This method is bypassed in favor of direct evaluation.
-        """
-        print("\n[Notice] Qwen3-ForcedAligner is used in pre-trained inference/evaluation mode.")
-        print("Skipping training pipeline and proceeding directly to evaluation...\n")
-        return None
+    def train_pipeline(
+        self,
+        num_epochs: int = 2,
+        batch_size: int = 2,
+        learning_rate: float = 5e-5
+    ):
+        print("\n=== Starting Training Pipeline ===")
+        optimizer = bnb.optim.AdamW8bit(self.aligner_model.parameters(), lr=learning_rate)
+        # REMOVED: scaler = GradScaler("cuda") — not needed for bfloat16
+        self.aligner_model.train()
+
+        all_languages = sorted(list(set(list(WAXAL_LANG_CODE.keys()) + list(FLEURS_LOW_MED.keys()))))
+
+        for epoch in range(num_epochs):
+            print(f"\n=== Epoch {epoch+1} / {num_epochs} ===")
+
+            for lang_name in all_languages:
+                print(f"\n--- Training Language: {lang_name} ---")
+
+                try:
+                    raw_ds = load_single_language_data(language_name=lang_name, split="train")
+                    train_dataset = UnifiedSpeechDataset(raw_ds, self.aligner_processor)
+
+                    train_loader = DataLoader(
+                        train_dataset,
+                        batch_size=batch_size,
+                        shuffle=True,
+                        collate_fn=self.collate_fn,
+                        num_workers=0,
+                        pin_memory=True
+                    )
+
+                    total_loss = 0.0
+                    step_count = 0
+
+                    for step, batch in enumerate(train_loader):
+                        if batch is None:
+                            continue
+
+                        audio_arrays = batch["audio_arrays"]
+                        sampling_rate = batch["sampling_rate"]
+                        transcript_texts = batch["texts"]
+
+                        processed_inputs = self.aligner_processor(
+                            audio=audio_arrays,
+                            sampling_rate=sampling_rate,
+                            text=transcript_texts,
+                            padding=True,
+                            return_tensors="pt"
+                        ).to(self.device)
+
+                        model_dtype = self.aligner_model.dtype
+                        processed_inputs = {
+                            k: v.to(dtype=model_dtype) if v.is_floating_point() else v
+                            for k, v in processed_inputs.items()
+                        }
+
+                        labels = torch.zeros_like(processed_inputs["input_ids"], dtype=torch.long)
+                        labels[processed_inputs["attention_mask"] == 0] = -100
+
+                        optimizer.zero_grad()
+
+                        # Forward pass with mixed precision bfloat16
+                        with autocast("cuda", dtype=torch.bfloat16):
+                            outputs = self.aligner_model(**processed_inputs, labels=labels)
+                            loss = outputs.loss
+
+                        if loss is not None and not torch.isnan(loss):
+                            # Standard backward and step without GradScaler for bfloat16
+                            loss.backward()
+                            optimizer.step()
+
+                            total_loss += loss.item()
+                            step_count += 1
+                            if step_count % 10 == 0:
+                                print(f"[{lang_name}] Step {step_count} | Running Loss: {loss.item():.4f}")
+
+                    if step_count > 0:
+                        print(f"[{lang_name}] Completed | Average Loss: {total_loss / step_count:.4f}")
+                    else:
+                        print(f"[{lang_name}] Skipped: No valid training steps completed.")
+
+                    del raw_ds, train_dataset, train_loader
+                    gc.collect()
+                    torch.cuda.empty_cache()
+
+                except Exception as e:
+                    print(f"Skipping {lang_name} due to loading/training error: {e}")
+                    continue
 
     def collate_fn(self, batch):
         audio_arrays = []
