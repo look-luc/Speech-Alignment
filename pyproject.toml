@@ -27,6 +27,7 @@ dependencies = [
     "transformers>=5.20.2",
     "av>=19.0.2",
     "torchcodec>=0.17.0",
+    "pika>=1.4.4",
 ]
 
 [project.scripts]
