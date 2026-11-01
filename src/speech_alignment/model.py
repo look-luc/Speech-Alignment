@@ -1,5 +1,5 @@
-import gc
 import io
+import logging
 
 import evaluate
 import soundfile as sf
@@ -17,6 +17,9 @@ from src.speech_alignment.data import (
     load_all_languages_dataset,
 )
 
+# Suppress the harmless transformers v5 processor kwargs warning log spam
+logging.getLogger("transformers.processing_utils").setLevel(logging.ERROR)
+
 
 class Forced_Aligner:
     def __init__(self) -> None:
@@ -30,7 +33,6 @@ class Forced_Aligner:
         )
         self.asr_model.eval()
 
-        # Step 2: Forced Aligner Model for Timestamps
         self.aligner_model_id = "Qwen/Qwen3-ForcedAligner-0.6B-hf"
         print(f"Loading Aligner processor and model: {self.aligner_model_id}...")
         self.aligner_processor = AutoProcessor.from_pretrained(self.aligner_model_id)
@@ -57,7 +59,6 @@ class Forced_Aligner:
         audio_arrays = []
         raw_texts = []
         target_sr = 16000
-        min_chunk_samples = int(target_sr * 1.0)
 
         for item in batch:
             try:
@@ -82,6 +83,7 @@ class Forced_Aligner:
 
                 arr = torch.tensor(waveform_np, dtype=torch.float32)
 
+                # Standardize dimensions to 1D mono tensor
                 if arr.ndim == 1:
                     arr = arr.unsqueeze(0)
                 elif arr.ndim == 2:
@@ -92,44 +94,22 @@ class Forced_Aligner:
                     arr = arr.mean(dim=0, keepdim=True)
                 arr = arr.squeeze(0)
 
+                # Resample if necessary
                 if orig_sr != target_sr:
                     arr = F.resample(arr.unsqueeze(0), orig_freq=orig_sr, new_freq=target_sr).squeeze(0)
+
+                transcript = item.get("transcription", "").strip()
+
+                # Basic validation: ensure text exists and audio is at least 0.1s long
+                if not transcript or arr.numel() < int(target_sr * 0.1):
+                    continue
+
+                audio_arrays.append(arr.numpy())
+                raw_texts.append(transcript)
 
             except Exception as e:
                 print(f"Audio load exception encountered: {e}")
                 continue
-
-            transcript = item.get("transcription", "")
-            total_samples = arr.numel()
-
-            words = transcript.split()
-            total_words = len(words)
-            if total_words == 0 or total_samples < min_chunk_samples:
-                continue
-
-            samples_per_word = total_samples / total_words
-            current_start = 0
-            current_word_idx = 0
-
-            while current_start < total_samples and current_word_idx < total_words:
-                remaining_words = total_words - current_word_idx
-                estimated_words = max(1, min(remaining_words, 15))
-
-                current_end = min(current_start + int(samples_per_word * estimated_words), total_samples)
-                audio_chunk = arr[current_start:current_end]
-
-                if audio_chunk.numel() < min_chunk_samples and current_end < total_samples:
-                    current_end = min(current_start + min_chunk_samples, total_samples)
-                    audio_chunk = arr[current_start:current_end]
-
-                text_chunk = " ".join(words[current_word_idx : current_word_idx + estimated_words])
-
-                if audio_chunk.numel() >= min_chunk_samples and len(text_chunk.strip()) > 0:
-                    audio_arrays.append(audio_chunk.numpy())
-                    raw_texts.append(text_chunk)
-
-                current_start = current_end
-                current_word_idx += estimated_words
 
         if not audio_arrays:
             return None
@@ -142,7 +122,7 @@ class Forced_Aligner:
 
     def evaluate_pipeline(
         self,
-        batch_size: int = 2,
+        batch_size: int = 32,
         split: str = "train",
         output_dir: str = "./multiling_forced_aligner_model"
     ):

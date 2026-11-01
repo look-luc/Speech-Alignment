@@ -1,5 +1,4 @@
 from datasets import Audio, concatenate_datasets, load_dataset
-from datasets.table import CastError
 from torch.utils.data import Dataset as TorchDataset
 
 WAXAL_LANG_CODE = {
@@ -14,7 +13,9 @@ FLEURS_LOW_MED = {
     "Filipino": "fil_ph", "Kazakh": "kk_kz", "Kyrgyz": "ky_kg", "Pashto": "ps_af",
     "Greek": "el_gr", "Finnish": "fi_fi", "Hungarian": "hu_hu", "Czech": "cs_cz",
     "Ukrainian": "uk_ua", "Romanian": "ro_ro", "Bulgarian": "bg_bg", "catalan": "ca_es",
-    "occitan": "oc_fr",
+    "occitan": "oc_fr","English": "en_us","Spanish": "es_419","French": "fr_fr","German": "de_de","Russian": "ru_ru","Mandarin": "cmn_hans_cn","Japanese":
+    "ja_jp","Korean": "ko_kr","Hindi": "hi_in","Indonesian": "id_id","Arabic": "ar_eg","Turkish": "tr_tr","Swahili": "sw_ke","Afrikaans": "af_za","Hausa":
+    "ha_ng","Yoruba": "yo_ng","Zulu": "zu_za",
 }
 
 def load_single_language_data(dataset_name=None, language=None, split="train", language_name=None):
