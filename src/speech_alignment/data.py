@@ -1,21 +1,34 @@
 from datasets import Audio, concatenate_datasets, load_dataset
 from torch.utils.data import Dataset as TorchDataset
 
-WAXAL_LANG_CODE = {
-    "Acholi": "ach", "Luganda": "lug", "Masaaba": "mas", "Nyankole": "nyn",
-    "Soga": "sog", "Akan": "aka", "Ikposo": "kpo", "Dagbani": "dag",
+# Expanded Stratified Subset featuring Occitan, diverse Asian languages, and comprehensive African coverage
+STRATIFIED_FLEURS = {
+    # High-Resource Anchors
+    "English": "en_us",
+    "Spanish": "es_419",
+
+    # European Romance & Regional Minority Language
+    "occitan": "oc_fr",
+    "French": "fr_fr",
+
+    # Asian Languages (East Asian, Indic, & Austronesian)
+    "Mandarin": "cmn_hans_cn",
+    "Japanese": "ja_jp",
+    "Hindi": "hi_in",
+    "Kannada": "kn_in",
+    "Filipino": "fil_ph",
+
+    # African Languages (FLEURS Global tier)
+    "Swahili": "sw_ke",
+    "Hausa": "ha_ng",
+    "Yoruba": "yo_ng",
 }
 
-FLEURS_LOW_MED = {
-    "Assamese": "as_in", "Gujarati": "gu_in", "Kannada": "kn_in", "Malayalam": "ml_in",
-    "Nepali": "ne_np", "Odia": "or_in", "Punjabi": "pa_in", "Sindhi": "sd_in",
-    "Cebuano": "ceb_ph", "Javanese": "jv_id", "Malay": "ms_my", "Maori": "mi_nz",
-    "Filipino": "fil_ph", "Kazakh": "kk_kz", "Kyrgyz": "ky_kg", "Pashto": "ps_af",
-    "Greek": "el_gr", "Finnish": "fi_fi", "Hungarian": "hu_hu", "Czech": "cs_cz",
-    "Ukrainian": "uk_ua", "Romanian": "ro_ro", "Bulgarian": "bg_bg", "catalan": "ca_es",
-    "occitan": "oc_fr","English": "en_us","Spanish": "es_419","French": "fr_fr","German": "de_de","Russian": "ru_ru","Mandarin": "cmn_hans_cn","Japanese":
-    "ja_jp","Korean": "ko_kr","Hindi": "hi_in","Indonesian": "id_id","Arabic": "ar_eg","Turkish": "tr_tr","Swahili": "sw_ke","Afrikaans": "af_za","Hausa":
-    "ha_ng","Yoruba": "yo_ng","Zulu": "zu_za",
+STRATIFIED_WAXAL = {
+    # Regional African Low-Resource (WaxalNLP tier)
+    "Luganda": "lug",
+    "Acholi": "ach",
+    "Dagbani": "dag",
 }
 
 def load_single_language_data(dataset_name=None, language=None, split="train", language_name=None):
@@ -27,8 +40,8 @@ def load_single_language_data(dataset_name=None, language=None, split="train", l
     if not lang:
         raise ValueError("Must provide a language or dataset name.")
 
-    if lang in WAXAL_LANG_CODE:
-        lang_code = WAXAL_LANG_CODE[lang]
+    if lang in STRATIFIED_WAXAL:
+        lang_code = STRATIFIED_WAXAL[lang]
         try:
             dataset = load_dataset("google/WaxalNLP", f"{lang_code}_asr", split=split)
         except Exception as e:
@@ -54,8 +67,8 @@ def load_single_language_data(dataset_name=None, language=None, split="train", l
             remove_columns=[col for col in dataset.column_names if col not in ["audio", "transcription", "language", "source"]]
         )
 
-    elif lang in FLEURS_LOW_MED:
-        lang_code = FLEURS_LOW_MED[lang]
+    elif lang in STRATIFIED_FLEURS:
+        lang_code = STRATIFIED_FLEURS[lang]
         dataset = load_dataset("google/fleurs", lang_code, split=split)
 
         if "raw_transcription" in dataset.column_names and "transcription" not in dataset.column_names:
@@ -95,19 +108,20 @@ def load_single_language_data(dataset_name=None, language=None, split="train", l
 
     return dataset
 
-
 def load_all_languages_dataset(split="train"):
     """
-    Loads, standardizes, and concatenates all configured languages
-    into a single unified Hugging Face dataset.
+    Loads, standardizes, and concatenates the stratified language subset
+    into a single unified Hugging Face dataset for efficient evaluation.
     """
-    all_languages = sorted(list(set(list(WAXAL_LANG_CODE.keys()) + list(FLEURS_LOW_MED.keys()))))
+    all_languages = sorted(list(set(list(STRATIFIED_WAXAL.keys()) + list(STRATIFIED_FLEURS.keys()))))
     dataset_list = []
 
-    print("Loading and combining datasets for all languages...")
+    print("Loading and combining datasets for stratified language subset...")
     for lang_name in all_languages:
         try:
-            ds = load_single_language_data(language_name=lang_name, split=split)
+            if lang_name in STRATIFIED_WAXAL:
+                lang_code = STRATIFIED_WAXAL[lang_name]
+            ds = load_single_language_data(language_name=lang_code, split=split)
             if ds is not None and len(ds) > 0:
                 dataset_list.append(ds)
                 print(f"Successfully loaded {lang_name} ({len(ds)} samples).")
