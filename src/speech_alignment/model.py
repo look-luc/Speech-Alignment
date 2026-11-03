@@ -1,15 +1,19 @@
 import io
 import logging
+import os
 
 import evaluate
 import soundfile as sf
 import torch
 import torchaudio.functional as F
+from peft import LoraConfig, PeftModel, TaskType, get_peft_model
 from torch.utils.data import DataLoader
 from transformers import (
     AutoModelForMultimodalLM,
     AutoModelForTokenClassification,
     AutoProcessor,
+    Trainer,
+    TrainingArguments,
 )
 
 from src.speech_alignment.data import (
@@ -22,7 +26,7 @@ logging.getLogger("transformers.processing_utils").setLevel(logging.ERROR)
 
 
 class Forced_Aligner:
-    def __init__(self) -> None:
+    def __init__(self, model_path: str = None) -> None:
         self.asr_model_id = "Qwen/Qwen3-ASR-1.7B-hf"
         print(f"Loading ASR processor and model: {self.asr_model_id}...")
         self.asr_processor = AutoProcessor.from_pretrained(self.asr_model_id)
@@ -36,11 +40,24 @@ class Forced_Aligner:
         self.aligner_model_id = "Qwen/Qwen3-ForcedAligner-0.6B-hf"
         print(f"Loading Aligner processor and model: {self.aligner_model_id}...")
         self.aligner_processor = AutoProcessor.from_pretrained(self.aligner_model_id)
-        self.aligner_model = AutoModelForTokenClassification.from_pretrained(
+
+        # Load base aligner model
+        base_aligner_model = AutoModelForTokenClassification.from_pretrained(
             self.aligner_model_id,
             dtype=torch.bfloat16,
             device_map="auto"
         )
+
+        # If a trained LoRA adapter path or directory is provided/exists, load it via PEFT
+        if model_path and os.path.exists(os.path.join(model_path, "adapter_config.json")):
+            print(f"Loading PEFT LoRA adapter from {model_path}...")
+            self.aligner_model = PeftModel.from_pretrained(base_aligner_model, model_path)
+        elif os.path.exists("./multiling_forced_aligner_trained/adapter_config.json"):
+            print("Loading default local PEFT LoRA adapter from ./multiling_forced_aligner_trained...")
+            self.aligner_model = PeftModel.from_pretrained(base_aligner_model, "./multiling_forced_aligner_trained")
+        else:
+            self.aligner_model = base_aligner_model
+
         self.aligner_model.eval()
 
         if torch.cuda.is_available():
@@ -50,10 +67,73 @@ class Forced_Aligner:
         else:
             self.device = "cpu"
 
-    def train_pipeline(self, *args, **kwargs):
-        print("\n[Notice] Two-Step Pipeline operates in pre-trained zero-shot inference mode.")
-        print("Bypassing training pipeline; proceeding directly to ASR transcription and forced alignment...\n")
-        return None
+    def train_pipeline(
+        self,
+        output_dir: str = "./multiling_forced_aligner_trained",
+        batch_size: int = 4,
+        num_train_epochs: int = 1,
+        learning_rate: float = 2e-5,
+        split: str = "train"
+    ):
+        """
+        Implements a PEFT (LoRA) training pipeline for the forced aligner model using Hugging Face Trainer.
+        """
+        print("\n=== Starting PEFT (LoRA) Training Pipeline ===")
+
+        # 1. Configure and apply PEFT LoRA wrappers
+        peft_config = LoraConfig(
+            task_type=TaskType.TOKEN_CLS,
+            inference_mode=False,
+            r=8,
+            lora_alpha=16,
+            lora_dropout=0.1,
+            target_modules="all-linear"
+        )
+
+        # Wrap base model with PEFT
+        self.aligner_model = get_peft_model(self.aligner_model, peft_config)
+        self.aligner_model.print_trainable_parameters()
+
+        # 2. Load dataset
+        try:
+            raw_ds = load_all_languages_dataset(split=split)
+            train_dataset = raw_ds.shuffle(seed=42).select(range(min(10000, len(raw_ds))))
+        except Exception as e:
+            print(f"Failed to load dataset for training: {e}")
+            return None
+
+        # 3. Define training arguments optimized for stability and VRAM efficiency
+        training_args = TrainingArguments(
+            output_dir=output_dir,
+            per_device_train_batch_size=batch_size,
+            gradient_accumulation_steps=4,
+            learning_rate=learning_rate,
+            num_train_epochs=num_train_epochs,
+            weight_decay=0.01,
+            fp16=False,
+            bf16=True,  # Use bfloat16 precision
+            logging_steps=10,
+            save_strategy="epoch",
+            dataloader_num_workers=2,
+            remove_unused_columns=False,
+        )
+
+        # 4. Initialize Trainer
+        trainer = Trainer(
+            model=self.aligner_model,
+            args=training_args,
+            train_dataset=train_dataset,
+        )
+
+        print("Launching PEFT training...")
+        train_result = trainer.train()
+
+        # Save the trained LoRA adapter weights and processor configuration
+        trainer.save_model(output_dir)
+        self.aligner_processor.save_pretrained(output_dir)
+        print(f"Training complete! PEFT model adapter saved to {output_dir}")
+
+        return train_result
 
     def collate_fn(self, batch):
         audio_arrays = []
@@ -100,7 +180,6 @@ class Forced_Aligner:
 
                 transcript = item.get("transcription", "").strip()
 
-                # Basic validation: ensure text exists and audio is at least 0.1s long
                 if not transcript or arr.numel() < int(target_sr * 0.1):
                     continue
 
@@ -122,7 +201,7 @@ class Forced_Aligner:
 
     def evaluate_pipeline(
         self,
-        batch_size: int = 32,
+        batch_size: int = 4,
         split: str = "train",
         output_dir: str = "./multiling_forced_aligner_model"
     ):
@@ -134,7 +213,7 @@ class Forced_Aligner:
         all_ref_texts = []
         alignment_results = []
 
-        print(f"\n=== Starting Two-Step Pipeline (ASR -> Aligner) ({split} split) ===")
+        print(f"\n=== Starting Two-Step Pipeline with PEFT Aligner (ASR -> Aligner) ({split} split) ===")
 
         try:
             raw_ds = load_all_languages_dataset(split=split)
@@ -205,7 +284,7 @@ class Forced_Aligner:
                             audio=[audio_arrays[i]],
                             sampling_rate=sampling_rate,
                             text=[aligner_input_text],
-                    padding=True,
+                            padding=True,
                             return_tensors="pt"
                         ).to(self.device)
 
@@ -233,7 +312,6 @@ class Forced_Aligner:
                         all_pred_texts.append(pred_text)
                         all_ref_texts.append([ref_text])
                     except Exception as e:
-                        # Print the exception for the first few errors to debug root cause
                         if len(alignment_results) == 0 and step == 0:
                             print(f"Alignment error debug: {e}")
                         continue
@@ -248,7 +326,7 @@ class Forced_Aligner:
                 bleu_score = bleu_result["score"]
 
         print("=" * 60)
-        print("| Two-Step Pipeline (ASR + Forced Aligner) Completed        |")
+        print("| Two-Step Pipeline (ASR + PEFT Aligner) Completed          |")
         print(f"| Total Successfully Aligned Samples: {len(alignment_results)}".ljust(59) + "|")
         print(f"| ASR Transcript BLEU Score vs Reference: {bleu_score:.4f}".ljust(59) + "|")
         print("=" * 60)

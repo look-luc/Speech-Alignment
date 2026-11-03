@@ -83,22 +83,6 @@ def load_single_language_data(dataset_name=None, language=None, split="train", l
             },
             remove_columns=[col for col in dataset.column_names if col not in ["audio", "transcription", "language", "source"]]
         )
-    else:
-        dataset = load_dataset(dataset_name or "google/fleurs", lang, split=split)
-        if "raw_transcription" in dataset.column_names and "transcription" not in dataset.column_names:
-            dataset = dataset.rename_column("raw_transcription", "transcription")
-        if "text" in dataset.column_names and "transcription" not in dataset.column_names:
-            dataset = dataset.rename_column("text", "transcription")
-
-        dataset = dataset.map(
-            lambda example: {
-                "audio": example.get("audio"),
-                "transcription": example.get("transcription", ""),
-                "language": lang,
-                "source": "custom"
-            },
-            remove_columns=[col for col in dataset.column_names if col not in ["audio", "transcription", "language", "source"]]
-        )
 
     # Unify audio column features across all datasets so concatenation succeeds
     try:
