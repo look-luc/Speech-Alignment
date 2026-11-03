@@ -205,7 +205,7 @@ class Forced_Aligner:
                             audio=[audio_arrays[i]],
                             sampling_rate=sampling_rate,
                             text=[aligner_input_text],
-                            padding=True,
+                    padding=True,
                             return_tensors="pt"
                         ).to(self.device)
 
@@ -232,7 +232,10 @@ class Forced_Aligner:
                         })
                         all_pred_texts.append(pred_text)
                         all_ref_texts.append([ref_text])
-                    except Exception:
+                    except Exception as e:
+                        # Print the exception for the first few errors to debug root cause
+                        if len(alignment_results) == 0 and step == 0:
+                            print(f"Alignment error debug: {e}")
                         continue
 
                 if (step + 1) % 50 == 0:

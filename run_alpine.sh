@@ -1,11 +1,11 @@
 #!/bin/bash
 #SBATCH --partition=aa100
 #SBATCH --qos=gpu-normal
-#SBATCH --gres=gpu:a100_80gb:2
+#SBATCH --gres=gpu:a100_80gb:1
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=16
-#SBATCH --mem=157G
+#SBATCH --mem=75G
 #SBATCH --time=24:00:00
 #SBATCH --output=/projects/%u/Speech-Alignment/logs/%j.log
 #SBATCH --job-name=forced-aligner-test

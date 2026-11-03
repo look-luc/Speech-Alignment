@@ -26,8 +26,8 @@ STRATIFIED_FLEURS = {
 
 STRATIFIED_WAXAL = {
     # Regional African Low-Resource (WaxalNLP tier)
-    "Luganda": "lug",
     "Acholi": "ach",
+    "Luganda": "lug",
     "Dagbani": "dag",
 }
 
@@ -121,6 +121,8 @@ def load_all_languages_dataset(split="train"):
         try:
             if lang_name in STRATIFIED_WAXAL:
                 lang_code = STRATIFIED_WAXAL[lang_name]
+            elif lang_name in STRATIFIED_FLEURS:
+                lang_code = STRATIFIED_FLEURS[lang_name]
             ds = load_single_language_data(language_name=lang_code, split=split)
             if ds is not None and len(ds) > 0:
                 dataset_list.append(ds)
