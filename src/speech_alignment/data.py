@@ -34,7 +34,7 @@ STRATIFIED_WAXAL = {
 def load_single_language_data(dataset_name=None, language=None, split="train", language_name=None):
     """
     Loads and standardizes dataset mapping and preprocessing
-    for either WaxalNLP or FLEURS datasets, with robust fallback for schema/CastErrors.
+    for either WaxalNLP or FLEURS datasets, with robust fallback for schema/CastErrors[cite: 5].
     """
     lang = language or language_name or dataset_name
     if not lang:

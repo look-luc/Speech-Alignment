@@ -62,10 +62,13 @@ class Forced_Aligner:
 
         if torch.cuda.is_available():
             self.device = "cuda"
+            self.use_cuda = True
         elif torch.backends.mps.is_available():
             self.device = "mps"
+            self.use_cuda = False
         else:
             self.device = "cpu"
+            self.use_cuda = False
 
     def train_pipeline(
         self,
@@ -76,7 +79,7 @@ class Forced_Aligner:
         split: str = "train"
     ):
         """
-        Implements a PEFT (LoRA) training pipeline for the forced aligner model using Hugging Face Trainer.
+        Implements a PEFT (LoRA) training pipeline for the forced aligner model using Hugging Face Trainer[cite: 6].
         """
         print("\n=== Starting PEFT (LoRA) Training Pipeline ===")
 
@@ -102,7 +105,7 @@ class Forced_Aligner:
             print(f"Failed to load dataset for training: {e}")
             return None
 
-        # 3. Define training arguments optimized for stability and VRAM efficiency
+        # 3. Define training arguments optimized for stability and hardware compatibility
         training_args = TrainingArguments(
             output_dir=output_dir,
             per_device_train_batch_size=batch_size,
@@ -111,18 +114,20 @@ class Forced_Aligner:
             num_train_epochs=num_train_epochs,
             weight_decay=0.01,
             fp16=False,
-            bf16=True,  # Use bfloat16 precision
+            bf16=self.use_cuda,
+            use_cpu=not self.use_cuda,
             logging_steps=10,
             save_strategy="epoch",
             dataloader_num_workers=2,
             remove_unused_columns=False,
         )
 
-        # 4. Initialize Trainer
+        # 4. Initialize Trainer with custom collate_fn
         trainer = Trainer(
             model=self.aligner_model,
             args=training_args,
             train_dataset=train_dataset,
+            data_collator=self.collate_fn,
         )
 
         print("Launching PEFT training...")
@@ -137,7 +142,7 @@ class Forced_Aligner:
 
     def collate_fn(self, batch):
         audio_arrays = []
-        raw_texts = []
+        texts = []
         target_sr = 16000
 
         for item in batch:
@@ -183,8 +188,15 @@ class Forced_Aligner:
                 if not transcript or arr.numel() < int(target_sr * 0.1):
                     continue
 
+                # Format chat template for the aligner model input
+                chat_text = self.aligner_processor.apply_chat_template(
+                    [{"role": "user", "content": [{"type": "audio"}, {"type": "text", "text": transcript}]}],
+                    tokenize=False,
+                    add_generation_prompt=False
+                )
+
                 audio_arrays.append(arr.numpy())
-                raw_texts.append(transcript)
+                texts.append(chat_text)
 
             except Exception as e:
                 print(f"Audio load exception encountered: {e}")
@@ -193,11 +205,26 @@ class Forced_Aligner:
         if not audio_arrays:
             return None
 
-        return {
-            "audio_arrays": audio_arrays,
-            "sampling_rate": target_sr,
-            "raw_texts": raw_texts
-        }
+        # Process inputs into tokenized tensors
+        batch_inputs = self.aligner_processor(
+            audio=audio_arrays,
+            sampling_rate=target_sr,
+            text=texts,
+            padding=True,
+            return_tensors="pt"
+        )
+
+        labels = torch.zeros_like(batch_inputs["input_ids"])
+
+        pad_token_id = self.aligner_processor.tokenizer.pad_token_id
+        if pad_token_id is not None:
+            labels[batch_inputs["input_ids"] == pad_token_id] = -100
+        else:
+            labels[batch_inputs["attention_mask"] == 0] = -100
+
+        batch_inputs["labels"] = labels
+
+        return batch_inputs
 
     def evaluate_pipeline(
         self,
