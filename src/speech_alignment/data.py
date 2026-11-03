@@ -34,18 +34,26 @@ STRATIFIED_WAXAL = {
 def load_single_language_data(dataset_name=None, language=None, split="train", language_name=None):
     """
     Loads and standardizes dataset mapping and preprocessing
-    for either WaxalNLP or FLEURS datasets, with robust fallback for schema/CastErrors[cite: 26].
+    for either WaxalNLP or FLEURS datasets, with robust fallback for schema/CastErrors.
     """
     lang = language or language_name or dataset_name
     if not lang:
         raise ValueError("Must provide a language or dataset name.")
 
-    if lang in STRATIFIED_WAXAL:
-        lang_code = STRATIFIED_WAXAL[lang]
+    lang_key = lang
+    if lang in STRATIFIED_WAXAL.values():
+        lang_key = [k for k, v in STRATIFIED_WAXAL.items() if v == lang][0]
+    elif lang in STRATIFIED_FLEURS.values():
+        lang_key = [k for k, v in STRATIFIED_FLEURS.items() if v == lang][0]
+
+    dataset = None
+
+    if lang_key in STRATIFIED_WAXAL:
+        lang_code = STRATIFIED_WAXAL[lang_key]
         try:
             dataset = load_dataset("google/WaxalNLP", f"{lang_code}_asr", split=split)
         except Exception as e:
-            print(f"Encountered schema issue loading {lang} ({e}), attempting reload with verification bypass...")
+            print(f"Encountered schema issue loading {lang_key} ({e}), attempting reload with verification bypass...")
             dataset = load_dataset("google/WaxalNLP", f"{lang_code}_asr", split=split, verification_mode="no_checks")
 
         if "__index_level_0__" in dataset.column_names:
@@ -61,14 +69,14 @@ def load_single_language_data(dataset_name=None, language=None, split="train", l
             lambda example: {
                 "audio": example["audio"],
                 "transcription": example["transcription"],
-                "language": example.get("language", lang),
+                "language": example.get("language", lang_key),
                 "source": "waxal"
             },
             remove_columns=[col for col in dataset.column_names if col not in ["audio", "transcription", "language", "source"]]
         )
 
-    elif lang in STRATIFIED_FLEURS:
-        lang_code = STRATIFIED_FLEURS[lang]
+    elif lang_key in STRATIFIED_FLEURS:
+        lang_code = STRATIFIED_FLEURS[lang_key]
         dataset = load_dataset("google/fleurs", lang_code, split=split)
 
         if "raw_transcription" in dataset.column_names and "transcription" not in dataset.column_names:
@@ -78,11 +86,13 @@ def load_single_language_data(dataset_name=None, language=None, split="train", l
             lambda example: {
                 "audio": example["audio"],
                 "transcription": example["transcription"],
-                "language": lang,
+                "language": lang_key,
                 "source": "fleurs"
             },
             remove_columns=[col for col in dataset.column_names if col not in ["audio", "transcription", "language", "source"]]
         )
+    else:
+        raise ValueError(f"Language '{lang}' not found in stratified subsets.")
 
     # Unify audio column features across all datasets so concatenation succeeds
     try:
