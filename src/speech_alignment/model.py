@@ -122,12 +122,12 @@ class Forced_Aligner:
             remove_unused_columns=False,
         )
 
-        # 4. Initialize Trainer with custom collate_fn
+        # 4. Initialize Trainer with the training-specific collate function
         trainer = Trainer(
             model=self.aligner_model,
             args=training_args,
             train_dataset=train_dataset,
-            data_collator=self.collate_fn,
+            data_collator=self.train_collate_fn,
         )
 
         print("Launching PEFT training...")
@@ -140,7 +140,8 @@ class Forced_Aligner:
 
         return train_result
 
-    def collate_fn(self, batch):
+    def train_collate_fn(self, batch):
+        """Dedicated collation function for Hugging Face Trainer (returns tokenized tensors and labels)."""
         audio_arrays = []
         texts = []
         target_sr = 16000
@@ -168,7 +169,6 @@ class Forced_Aligner:
 
                 arr = torch.tensor(waveform_np, dtype=torch.float32)
 
-                # Standardize dimensions to 1D mono tensor
                 if arr.ndim == 1:
                     arr = arr.unsqueeze(0)
                 elif arr.ndim == 2:
@@ -179,7 +179,6 @@ class Forced_Aligner:
                     arr = arr.mean(dim=0, keepdim=True)
                 arr = arr.squeeze(0)
 
-                # Resample if necessary
                 if orig_sr != target_sr:
                     arr = F.resample(arr.unsqueeze(0), orig_freq=orig_sr, new_freq=target_sr).squeeze(0)
 
@@ -188,7 +187,6 @@ class Forced_Aligner:
                 if not transcript or arr.numel() < int(target_sr * 0.1):
                     continue
 
-                # Format chat template for the aligner model input
                 chat_text = self.aligner_processor.apply_chat_template(
                     [{"role": "user", "content": [{"type": "audio"}, {"type": "text", "text": transcript}]}],
                     tokenize=False,
@@ -199,13 +197,11 @@ class Forced_Aligner:
                 texts.append(chat_text)
 
             except Exception as e:
-                print(f"Audio load exception encountered: {e}")
                 continue
 
         if not audio_arrays:
             return None
 
-        # Process inputs into tokenized tensors
         batch_inputs = self.aligner_processor(
             audio=audio_arrays,
             sampling_rate=target_sr,
@@ -215,7 +211,6 @@ class Forced_Aligner:
         )
 
         labels = torch.zeros_like(batch_inputs["input_ids"])
-
         pad_token_id = self.aligner_processor.tokenizer.pad_token_id
         if pad_token_id is not None:
             labels[batch_inputs["input_ids"] == pad_token_id] = -100
@@ -223,8 +218,69 @@ class Forced_Aligner:
             labels[batch_inputs["attention_mask"] == 0] = -100
 
         batch_inputs["labels"] = labels
-
         return batch_inputs
+
+    def collate_fn(self, batch):
+        """Dedicated collation function for evaluation DataLoader (returns raw audio arrays and texts)."""
+        audio_arrays = []
+        raw_texts = []
+        target_sr = 16000
+
+        for item in batch:
+            try:
+                audio_info = item.get("audio")
+                if not audio_info:
+                    continue
+
+                waveform_np = None
+                orig_sr = target_sr
+
+                if isinstance(audio_info, dict):
+                    if "array" in audio_info and audio_info["array"] is not None:
+                        waveform_np = audio_info["array"]
+                        orig_sr = audio_info.get("sampling_rate", 16000)
+                    elif "bytes" in audio_info and audio_info["bytes"] is not None:
+                        waveform_np, orig_sr = sf.read(io.BytesIO(audio_info["bytes"]))
+                    elif "path" in audio_info and audio_info["path"] is not None:
+                        waveform_np, orig_sr = sf.read(audio_info["path"])
+
+                if waveform_np is None:
+                    continue
+
+                arr = torch.tensor(waveform_np, dtype=torch.float32)
+
+                if arr.ndim == 1:
+                    arr = arr.unsqueeze(0)
+                elif arr.ndim == 2:
+                    if arr.shape[0] > arr.shape[1]:
+                        arr = arr.transpose(0, 1)
+
+                if arr.shape[0] > 1:
+                    arr = arr.mean(dim=0, keepdim=True)
+                arr = arr.squeeze(0)
+
+                if orig_sr != target_sr:
+                    arr = F.resample(arr.unsqueeze(0), orig_freq=orig_sr, new_freq=target_sr).squeeze(0)
+
+                transcript = item.get("transcription", "").strip()
+
+                if not transcript or arr.numel() < int(target_sr * 0.1):
+                    continue
+
+                audio_arrays.append(arr.numpy())
+                raw_texts.append(transcript)
+
+            except Exception as e:
+                continue
+
+        if not audio_arrays:
+            return None
+
+        return {
+            "audio_arrays": audio_arrays,
+            "sampling_rate": target_sr,
+            "raw_texts": raw_texts
+        }
 
     def evaluate_pipeline(
         self,
@@ -323,6 +379,9 @@ class Forced_Aligner:
 
                         outputs = self.aligner_model(**aligner_inputs)
                         logits = outputs.logits
+
+                        if logits.shape[1] < aligner_inputs["input_ids"].shape[1]:
+                            continue
 
                         timestamps = self.aligner_processor.decode_forced_alignment(
                             logits=logits[0:1],
