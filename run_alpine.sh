@@ -1,12 +1,12 @@
 #!/bin/bash
-#SBATCH --partition=artxpro6000
+#SBATCH --partition=aa100
 #SBATCH --qos=gpu-normal
-#SBATCH --gres=gpu:rtx_pro_6000_2g.48gb:1
+#SBATCH --gres=gpu:a100_80gb:2
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=16
-#SBATCH --mem=75G
-#SBATCH --time=7:30:00
+#SBATCH --mem=157G
+#SBATCH --time=12:00:00
 #SBATCH --output=/projects/%u/Speech-Alignment/logs/%j.log
 #SBATCH --job-name=forced-aligner-test
 #SBATCH --account=ucb-general

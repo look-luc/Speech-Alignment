@@ -25,6 +25,35 @@ from src.speech_alignment.data import (
 logging.getLogger("transformers.processing_utils").setLevel(logging.ERROR)
 
 
+class JointSpeechTrainer(Trainer):
+    """Custom Trainer subclass to compute and combine losses for both ASR and Aligner models."""
+    def __init__(self, *args, asr_model=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.asr_model = asr_model
+
+    def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
+        # 1. Forward pass for the Aligner model (Token Classification)
+        aligner_outputs = model(
+            input_ids=inputs.get("aligner_input_ids"),
+            attention_mask=inputs.get("aligner_attention_mask"),
+            labels=inputs.get("aligner_labels")
+        )
+        aligner_loss = aligner_outputs.loss
+
+        # 2. Forward pass for the ASR model (Multimodal LM / Causal LM)
+        asr_outputs = self.asr_model(
+            input_ids=inputs.get("asr_input_ids"),
+            attention_mask=inputs.get("asr_attention_mask"),
+            labels=inputs.get("asr_labels")
+        )
+        asr_loss = asr_outputs.loss
+
+        # 3. Sum losses jointly (equal weighting)
+        total_loss = aligner_loss + asr_loss
+
+        return (total_loss, {"aligner_loss": aligner_loss, "asr_loss": asr_loss}) if return_outputs else total_loss
+
+
 class Forced_Aligner:
     def __init__(self, model_path: str = None) -> None:
         self.asr_model_id = "Qwen/Qwen3-ASR-1.7B-hf"
@@ -35,7 +64,8 @@ class Forced_Aligner:
             dtype=torch.bfloat16,
             device_map="auto"
         )
-        self.asr_model.eval()
+        # Ensure ASR model is trainable
+        self.asr_model.train()
 
         self.aligner_model_id = "Qwen/Qwen3-ForcedAligner-0.6B-hf"
         print(f"Loading Aligner processor and model: {self.aligner_model_id}...")
@@ -58,7 +88,7 @@ class Forced_Aligner:
         else:
             self.aligner_model = base_aligner_model
 
-        self.aligner_model.eval()
+        self.aligner_model.train()
 
         if torch.cuda.is_available():
             self.device = "cuda"
@@ -73,18 +103,18 @@ class Forced_Aligner:
     def train_pipeline(
         self,
         output_dir: str = "./multiling_forced_aligner_trained",
-        batch_size: int = 4,
+        batch_size: int = 32,  # Lowered to 1 due to high VRAM requirements for dual model training
         num_train_epochs: int = 1,
         learning_rate: float = 2e-5,
         split: str = "train"
     ):
         """
-        Implements a PEFT (LoRA) training pipeline for the forced aligner model using Hugging Face Trainer[cite: 6].
+        Implements a joint PEFT (LoRA) training pipeline for both ASR and Aligner models.
         """
-        print("\n=== Starting PEFT (LoRA) Training Pipeline ===")
+        print("\n=== Starting Joint PEFT (LoRA) Training Pipeline (ASR + Aligner) ===")
 
-        # 1. Configure and apply PEFT LoRA wrappers
-        peft_config = LoraConfig(
+        # 1. Configure and apply PEFT LoRA wrappers to Aligner
+        aligner_peft_config = LoraConfig(
             task_type=TaskType.TOKEN_CLS,
             inference_mode=False,
             r=8,
@@ -92,24 +122,34 @@ class Forced_Aligner:
             lora_dropout=0.1,
             target_modules=["q_proj", "k_proj", "v_proj", "out_proj", "fc1", "fc2"]
         )
+        self.aligner_model = get_peft_model(self.aligner_model, aligner_peft_config)
 
-        # Wrap base model with PEFT
-        self.aligner_model = get_peft_model(self.aligner_model, peft_config)
+        # 2. Configure and apply PEFT LoRA wrappers to ASR model
+        asr_peft_config = LoraConfig(
+            task_type=TaskType.CAUSAL_LM,
+            inference_mode=False,
+            r=8,
+            lora_alpha=16,
+            lora_dropout=0.1,
+            target_modules=["q_proj", "v_proj"]
+        )
+        self.asr_model = get_peft_model(self.asr_model, asr_peft_config)
+        self.asr_model.print_trainable_parameters()
         self.aligner_model.print_trainable_parameters()
 
-        # 2. Load dataset
+        # 3. Load dataset
         try:
             raw_ds = load_all_languages_dataset(split=split)
-            train_dataset = raw_ds.shuffle(seed=42).select(range(min(10000, len(raw_ds))))
+            train_dataset = raw_ds.shuffle(seed=42)
         except Exception as e:
             print(f"Failed to load dataset for training: {e}")
             return None
 
-        # 3. Define training arguments optimized for stability and hardware compatibility
+        # 4. Define training arguments optimized for dual-model VRAM management
         training_args = TrainingArguments(
             output_dir=output_dir,
             per_device_train_batch_size=batch_size,
-            gradient_accumulation_steps=4,
+            gradient_accumulation_steps=8,  # Increased accumulation to compensate for smaller batch size
             learning_rate=learning_rate,
             num_train_epochs=num_train_epochs,
             weight_decay=0.01,
@@ -122,26 +162,28 @@ class Forced_Aligner:
             remove_unused_columns=False,
         )
 
-        # 4. Initialize Trainer with the training-specific collate function
-        trainer = Trainer(
+        # 5. Initialize Joint Trainer
+        trainer = JointSpeechTrainer(
             model=self.aligner_model,
+            asr_model=self.asr_model,
             args=training_args,
             train_dataset=train_dataset,
             data_collator=self.train_collate_fn,
         )
 
-        print("Launching PEFT training...")
+        print("Launching joint PEFT training...")
         train_result = trainer.train()
 
-        # Save the trained LoRA adapter weights and processor configuration
+        # Save trained models and processors
         trainer.save_model(output_dir)
         self.aligner_processor.save_pretrained(output_dir)
-        print(f"Training complete! PEFT model adapter saved to {output_dir}")
+        self.asr_processor.save_pretrained(output_dir)
+        print(f"Training complete! Joint adapters saved to {output_dir}")
 
         return train_result
 
     def train_collate_fn(self, batch):
-        """Dedicated collation function for Hugging Face Trainer (returns tokenized tensors and labels)."""
+        """Collation function preparing inputs for both Aligner and ASR models simultaneously."""
         audio_arrays = []
         texts = []
         target_sr = 16000
@@ -187,14 +229,8 @@ class Forced_Aligner:
                 if not transcript or arr.numel() < int(target_sr * 0.1):
                     continue
 
-                chat_text = self.aligner_processor.apply_chat_template(
-                    [{"role": "user", "content": [{"type": "audio"}, {"type": "text", "text": transcript}]}],
-                    tokenize=False,
-                    add_generation_prompt=False
-                )
-
                 audio_arrays.append(arr.numpy())
-                texts.append(chat_text)
+                texts.append(transcript)
 
             except Exception as e:
                 continue
@@ -202,23 +238,49 @@ class Forced_Aligner:
         if not audio_arrays:
             return None
 
-        batch_inputs = self.aligner_processor(
+        # Tokenize for Aligner
+        aligner_chat_texts = [
+            self.aligner_processor.apply_chat_template(
+                [{"role": "user", "content": [{"type": "audio"}, {"type": "text", "text": t}]}],
+                tokenize=False,
+                add_generation_prompt=False
+            ) for t in texts
+        ]
+        aligner_inputs = self.aligner_processor(
+            audio=audio_arrays,
+            sampling_rate=target_sr,
+            text=aligner_chat_texts,
+            padding=True,
+            return_tensors="pt"
+        )
+        aligner_labels = torch.zeros_like(aligner_inputs["input_ids"])
+        pad_id = self.aligner_processor.tokenizer.pad_token_id
+        if pad_id is not None:
+            aligner_labels[aligner_inputs["input_ids"] == pad_id] = -100
+        else:
+            aligner_labels[aligner_inputs["attention_mask"] == 0] = -100
+
+        # Tokenize for ASR
+        asr_inputs = self.asr_processor(
             audio=audio_arrays,
             sampling_rate=target_sr,
             text=texts,
             padding=True,
             return_tensors="pt"
         )
+        asr_labels = asr_inputs["input_ids"].clone()
+        asr_pad_id = self.asr_processor.tokenizer.pad_token_id
+        if asr_pad_id is not None:
+            asr_labels[asr_labels == asr_pad_id] = -100
 
-        labels = torch.zeros_like(batch_inputs["input_ids"])
-        pad_token_id = self.aligner_processor.tokenizer.pad_token_id
-        if pad_token_id is not None:
-            labels[batch_inputs["input_ids"] == pad_token_id] = -100
-        else:
-            labels[batch_inputs["attention_mask"] == 0] = -100
-
-        batch_inputs["labels"] = labels
-        return batch_inputs
+        return {
+            "aligner_input_ids": aligner_inputs["input_ids"],
+            "aligner_attention_mask": aligner_inputs["attention_mask"],
+            "aligner_labels": aligner_labels,
+            "asr_input_ids": asr_inputs["input_ids"],
+            "asr_attention_mask": asr_inputs["attention_mask"],
+            "asr_labels": asr_labels,
+        }
 
     def collate_fn(self, batch):
         """Dedicated collation function for evaluation DataLoader (returns raw audio arrays and texts)."""
@@ -284,7 +346,7 @@ class Forced_Aligner:
 
     def evaluate_pipeline(
         self,
-        batch_size: int = 4,
+        batch_size: int = 32,
         split: str = "train",
         output_dir: str = "./multiling_forced_aligner_model"
     ):
@@ -398,8 +460,6 @@ class Forced_Aligner:
                         all_pred_texts.append(pred_text)
                         all_ref_texts.append([ref_text])
                     except Exception as e:
-                        if len(alignment_results) == 0 and step == 0:
-                            print(f"Alignment error debug: {e}")
                         continue
 
                 if (step + 1) % 50 == 0:
