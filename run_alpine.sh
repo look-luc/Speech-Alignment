@@ -6,7 +6,7 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=157G
-#SBATCH --time=12:00:00
+#SBATCH --time=7:30:00
 #SBATCH --output=/projects/%u/Speech-Alignment/logs/%j.log
 #SBATCH --job-name=forced-aligner-test
 #SBATCH --account=ucb-general

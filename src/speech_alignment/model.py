@@ -343,24 +343,24 @@ class Forced_Aligner:
 
                 # --- STEP 2: Forced Alignment (Using Ground-Truth Text Anchors) ---
                 for i in range(len(audio_arrays)):
-                    pred_text = predicted_texts[i].strip() if i < len(predicted_texts) else ""
-                    ref_text = raw_refs[i].strip()
-
-                    if pred_text and ref_text:
-                        all_pred_texts.append(pred_text)
-                        all_ref_texts.append([ref_text])
-
-                    target_alignment_text = ref_text
-                    if not target_alignment_text:
-                        continue
-
-                    word_list = target_alignment_text.split()
-                    if not word_list:
-                        continue
-
                     try:
+                        # Safe lookups with index validation
+                        pred_text = predicted_texts[i].strip() if i < len(predicted_texts) else ""
+                        ref_text = raw_refs[i].strip() if i < len(raw_refs) else ""
+
+                        if not ref_text:
+                            continue
+
+                        if pred_text:
+                            all_pred_texts.append(pred_text)
+                            all_ref_texts.append([ref_text])
+
+                        word_list = ref_text.split()
+                        if not word_list:
+                            continue
+
                         aligner_input_text = self.aligner_processor.apply_chat_template(
-                            [{"role": "user", "content": [{"type": "audio"}, {"type": "text", "text": target_alignment_text}]}],
+                            [{"role": "user", "content": [{"type": "audio"}, {"type": "text", "text": ref_text}]}],
                             tokenize=False,
                             add_generation_prompt=False
                         )
@@ -383,6 +383,7 @@ class Forced_Aligner:
                         logits = outputs.logits
 
                         if logits.shape[1] < aligner_inputs["input_ids"].shape[1]:
+                            print(f"Warning: Logits shape mismatch for sample {i} in batch {step}")
                             continue
 
                         timestamps = self.aligner_processor.decode_forced_alignment(
@@ -392,13 +393,21 @@ class Forced_Aligner:
                             timestamp_token_id=self.aligner_model.config.timestamp_token_id
                         )
 
+                        # Guard against empty decoding outputs or out-of-bounds indexing
+                        if not timestamps or len(timestamps) == 0:
+                            print(f"Warning: Empty alignment timestamps for sample {i} in batch {step}")
+                            continue
+
                         alignment_results.append({
                             "predicted_transcript": pred_text,
                             "reference_transcript": ref_text,
                             "timestamps": timestamps
                         })
+                    except IndexError as ie:
+                        print(f"IndexError caught for sample {i} in batch {step}: {ie}")
+                        continue
                     except Exception as e:
-                        print(f"Alignment Error for sample {i}: {e}")
+                        print(f"Alignment Error for sample {i} in batch {step}: {e}")
                         continue
 
                 if (step + 1) % 10 == 0:
