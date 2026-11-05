@@ -71,7 +71,7 @@ class Forced_Aligner:
     def train_pipeline(
         self,
         output_dir: str = "./multiling_forced_aligner_trained",
-        batch_size: int = 4,  # Lowered default to prevent OOM with 1.7B model
+        batch_size: int = 16,
         num_train_epochs: int = 1,
         learning_rate: float = 2e-5,
         split: str = "train"
@@ -103,7 +103,7 @@ class Forced_Aligner:
         training_args = TrainingArguments(
             output_dir=output_dir,
             per_device_train_batch_size=batch_size,
-            gradient_accumulation_steps=4,
+            gradient_accumulation_steps=2,
             learning_rate=learning_rate,
             num_train_epochs=num_train_epochs,
             weight_decay=0.01,
@@ -133,7 +133,7 @@ class Forced_Aligner:
         return train_result
 
     def asr_train_collate_fn(self, batch):
-        """Dedicated collator for ASR training using ground-truth text targets."""
+        """Dedicated collator for ASR training using chat templates and ground-truth text targets."""
         audio_arrays = []
         texts = []
         target_sr = 16000
@@ -179,10 +179,28 @@ class Forced_Aligner:
         if not audio_arrays:
             return None
 
+        # Format inputs using chat template so audio placeholder tokens are correctly inserted
+        asr_chat_texts = [
+            self.asr_processor.apply_chat_template(
+                [
+                    {
+                        "role": "user",
+                        "content": [{"type": "audio"}, {"type": "text", "text": "Use the languages in your training data to transcribe the audio into text using the Latin alphabet."}]
+                    },
+                    {
+                        "role": "assistant",
+                        "content": t
+                    }
+                ],
+                tokenize=False,
+                add_generation_prompt=False
+            ) for t in texts
+        ]
+
         asr_inputs = self.asr_processor(
             audio=audio_arrays,
             sampling_rate=target_sr,
-            text=texts,
+            text=asr_chat_texts,
             padding=True,
             return_tensors="pt"
         )
@@ -191,7 +209,6 @@ class Forced_Aligner:
         if asr_pad_id is not None:
             asr_labels[asr_labels == asr_pad_id] = -100
 
-        # Robust extraction / fallback for audio feature masks
         input_features = asr_inputs.get("input_features")
         input_features_mask = asr_inputs.get("input_features_mask")
         if input_features_mask is None:
@@ -262,7 +279,7 @@ class Forced_Aligner:
 
     def evaluate_pipeline(
         self,
-        batch_size: int = 4,
+        batch_size: int = 16,
         split: str = "train",
         output_dir: str = "./multiling_forced_aligner_model"
     ):
