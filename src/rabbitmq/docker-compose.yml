@@ -1,0 +1,25 @@
+version: '3.8'
+
+services:
+  # The RabbitMQ Broker
+  rabbitmq:
+    image: rabbitmq:3.12-management
+    container_name: rabbitmq_broker
+    ports:
+      - "5672:5672"   # AMQP protocol port
+      - "15672:15672" # Management Dashboard port
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "check_port_connectivity"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # Your Custom App/Worker
+  my_worker:
+    build: .
+    container_name: rabbitmq_worker
+    environment:
+      - RABBITMQ_HOST=rabbitmq # Matches the service name above
+    depends_on:
+      rabbitmq:
+        condition: service_healthy # Wait until RabbitMQ is fully ready before starting your app

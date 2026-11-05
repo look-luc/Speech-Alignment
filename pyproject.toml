@@ -17,14 +17,17 @@ dependencies = [
     "librosa>=1.0.0",
     "pandas>=3.1.0",
     "peft>=0.21.2",
+    "python-dotenv>=1.2.4",
     "sacrebleu>=2.6.0",
     "scikit-learn>=1.9.1",
     "soundfile>=0.14.0",
     "textgrid>=1.6.1",
     "torch>=2.14.1",
     "torchaudio>=2.11.0",
-    "torchcodec>=0.17.0",
     "transformers>=5.20.2",
+    "av>=19.0.2",
+    "torchcodec>=0.17.0",
+    "pika>=1.4.4",
 ]
 
 [project.scripts]

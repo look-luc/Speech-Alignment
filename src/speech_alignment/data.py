@@ -1,136 +1,139 @@
-import gc
-import os
-
-import pandas as pd
-import torch
-import torchaudio
-from datasets import Dataset, concatenate_datasets, load_dataset
-from huggingface_hub import snapshot_download
+from datasets import Audio, concatenate_datasets, load_dataset
 from torch.utils.data import Dataset as TorchDataset
 
-WAXAL_LANG_CODE = {
-    "Acholi": "ach", "Luganda": "lug", "Masaaba": "mas", "Nyankole": "nyn",
-    "Soga": "sog", "Akan": "aka", "Ewe": "ewe", "Dagbani": "dag",
-}
+# Expanded Stratified Subset featuring Occitan, diverse Asian languages, and comprehensive African coverage
+STRATIFIED_FLEURS = {
+    # High-Resource Anchors
+    "English": "en_us",
+    "Spanish": "es_419",
 
-FLEURS_LOW_MED = {
-    "Assamese": "as_in", "Gujarati": "gu_in", "Kannada": "kn_in", "Malayalam": "ml_in",
-    "Nepali": "ne_np", "Odia": "or_in", "Punjabi": "pa_in", "Sindhi": "sd_in",
-    "Cebuano": "ceb_ph", "Javanese": "jv_id", "Malay": "ms_my", "Maori": "mi_nz",
-    "Filipino": "fil_ph", "Kazakh": "kk_kz", "Kyrgyz": "ky_kg", "Pashto": "ps_af",
-    "Greek": "el_gr", "Finnish": "fi_fi", "Hungarian": "hu_hu", "Czech": "cs_cz",
-    "Ukrainian": "uk_ua", "Romanian": "ro_ro", "Bulgarian": "bg_bg", "catalan": "ca_es",
+    # European Romance & Regional Minority Language
     "occitan": "oc_fr",
+    "French": "fr_fr",
+
+    # Asian Languages (East Asian, Indic, & Austronesian)
+    "Mandarin": "cmn_hans_cn",
+    "Japanese": "ja_jp",
+    "Hindi": "hi_in",
+    "Kannada": "kn_in",
+    "Filipino": "fil_ph",
+
+    # African Languages (FLEURS Global tier)
+    "Swahili": "sw_ke",
+    "Hausa": "ha_ng",
+    "Yoruba": "yo_ng",
 }
 
+STRATIFIED_WAXAL = {
+    # Regional African Low-Resource (WaxalNLP tier)
+    "Acholi": "ach",
+    "Luganda": "lug",
+    "Dagbani": "dag",
+}
 
-def load_waxal_clean(language_subset: str = "ach_asr", split: str = "train") -> Dataset:
-    repo_id = "google/WaxalNLP"
-    repo_dir = snapshot_download(repo_id=repo_id, repo_type="dataset")
-
-    lang_code = language_subset.replace("_asr", "").replace("_tts", "")
-
-    parquet_files = []
-    for root, _, files in os.walk(repo_dir):
-        for file in files:
-            if file.endswith(".parquet") and lang_code in root and split in file:
-                parquet_files.append(os.path.join(root, file))
-
-    if not parquet_files:
-        raise FileNotFoundError(f"No parquet files found for language code '{lang_code}' and split '{split}'.")
-
-    datasets_list = []
-    for file_path in sorted(parquet_files):
-        # Read into Pandas
-        df = pd.read_parquet(file_path)
-
-        if "__index_level_0__" in df.columns:
-            df = df.drop(columns=["__index_level_0__"])
-
-        if "text" in df.columns and "transcription" not in df.columns:
-            df = df.rename(columns={"text": "transcription"})
-        if "locale" in df.columns and "language" not in df.columns:
-            df = df.rename(columns={"locale": "language"})
-
-        ds = Dataset.from_pandas(df)
-        datasets_list.append(ds)
-
-        # Explicitly delete the intermediate dataframe and free memory
-        del df
-        gc.collect()
-
-    combined_dataset = concatenate_datasets(datasets_list)
-
-    # Clean up the list references
-    del datasets_list
-    gc.collect()
-
-    return combined_dataset
-
-
-def load_single_language_data(language_name: str, split: str = "train", max_samples: int = 3000) -> Dataset:
+def load_single_language_data(dataset_name=None, language=None, split="train", language_name=None):
     """
-    Loads, harmonizes, and caps WaxalNLP and FLEURS data for a single language,
-    filtering out overly long audio files to prevent OOM errors.
+    Loads and standardizes dataset mapping and preprocessing
+    for either WaxalNLP or FLEURS datasets, with robust fallback for schema/CastErrors[cite: 5].
     """
-    datasets_to_combine = []
-    standard_columns = ["audio", "transcription", "language", "source"]
+    lang = language or language_name or dataset_name
+    if not lang:
+        raise ValueError("Must provide a language or dataset name.")
 
-    # 1. Load WaxalNLP for this language if available
-    if language_name in WAXAL_LANG_CODE:
-        code = WAXAL_LANG_CODE[language_name]
-        subset = f"{code}_asr"
+    lang_key = lang
+    if lang in STRATIFIED_WAXAL.values():
+        lang_key = [k for k, v in STRATIFIED_WAXAL.items() if v == lang][0]
+    elif lang in STRATIFIED_FLEURS.values():
+        lang_key = [k for k, v in STRATIFIED_FLEURS.items() if v == lang][0]
+
+    dataset = None
+
+    if lang_key in STRATIFIED_WAXAL:
+        lang_code = STRATIFIED_WAXAL[lang_key]
         try:
-            print(f"Loading WaxalNLP for {language_name} ({subset})...")
-            waxal_ds = load_waxal_clean(language_subset=subset, split=split)
-            waxal_mapped = waxal_ds.map(
-                lambda b: {
-                    "audio": b["audio"],
-                    "transcription": b["transcription"],
-                    "language": b.get("language", subset),
-                    "source": "waxal"
-                },
-                remove_columns=[col for col in waxal_ds.column_names if col not in standard_columns]
-            )
-            datasets_to_combine.append(waxal_mapped)
+            dataset = load_dataset("google/WaxalNLP", f"{lang_code}_asr", split=split)
         except Exception as e:
-            print(f"Notice: No WaxalNLP data found for {language_name} ({e})")
+            print(f"Encountered schema issue loading {lang_key} ({e}), attempting reload with verification bypass...")
+            dataset = load_dataset("google/WaxalNLP", f"{lang_code}_asr", split=split, verification_mode="no_checks")
 
-    # 2. Load FLEURS for this language if available
-    if language_name in FLEURS_LOW_MED:
-        code = FLEURS_LOW_MED[language_name]
+        if "__index_level_0__" in dataset.column_names:
+            dataset = dataset.remove_columns(["__index_level_0__"])
+
+        if "text" in dataset.column_names:
+            dataset = dataset.rename_column("text", "transcription")
+
+        if "locale" in dataset.column_names:
+            dataset = dataset.rename_column("locale", "language")
+
+        dataset = dataset.map(
+            lambda example: {
+                "audio": example["audio"],
+                "transcription": example["transcription"],
+                "language": example.get("language", lang_key),
+                "source": "waxal"
+            },
+            remove_columns=[col for col in dataset.column_names if col not in ["audio", "transcription", "language", "source"]]
+        )
+
+    elif lang_key in STRATIFIED_FLEURS:
+        lang_code = STRATIFIED_FLEURS[lang_key]
+        dataset = load_dataset("google/fleurs", lang_code, split=split)
+
+        if "raw_transcription" in dataset.column_names and "transcription" not in dataset.column_names:
+            dataset = dataset.rename_column("raw_transcription", "transcription")
+
+        dataset = dataset.map(
+            lambda example: {
+                "audio": example["audio"],
+                "transcription": example["transcription"],
+                "language": lang_key,
+                "source": "fleurs"
+            },
+            remove_columns=[col for col in dataset.column_names if col not in ["audio", "transcription", "language", "source"]]
+        )
+    else:
+        raise ValueError(f"Language '{lang}' not found in stratified subsets.")
+
+    # Unify audio column features across all datasets so concatenation succeeds
+    try:
+        dataset = dataset.cast_column("audio", Audio(sampling_rate=16000))
+    except Exception:
+        pass
+
+    return dataset
+
+def load_all_languages_dataset(split="train"):
+    """
+    Loads, standardizes, and concatenates the stratified language subset
+    into a single unified Hugging Face dataset for efficient evaluation.
+    """
+    all_languages = sorted(list(set(list(STRATIFIED_WAXAL.keys()) + list(STRATIFIED_FLEURS.keys()))))
+    dataset_list = []
+
+    print("Loading and combining datasets for stratified language subset...")
+    for lang_name in all_languages:
         try:
-            print(f"Loading FLEURS for {language_name} ({code})...")
-            fleurs_ds = load_dataset("google/fleurs", code, split=split)
-            fleurs_mapped = fleurs_ds.map(
-                lambda b: {
-                    "audio": b["audio"],
-                    "transcription": b["transcription"],
-                    "language": code,
-                    "source": "fleurs"
-                },
-                remove_columns=[col for col in fleurs_ds.column_names if col not in standard_columns]
-            )
-            datasets_to_combine.append(fleurs_mapped)
+            if lang_name in STRATIFIED_WAXAL:
+                lang_code = STRATIFIED_WAXAL[lang_name]
+            elif lang_name in STRATIFIED_FLEURS:
+                lang_code = STRATIFIED_FLEURS[lang_name]
+            ds = load_single_language_data(language_name=lang_code, split=split)
+            if ds is not None and len(ds) > 0:
+                dataset_list.append(ds)
+                print(f"Successfully loaded {lang_name} ({len(ds)} samples).")
         except Exception as e:
-            print(f"Notice: No FLEURS data found for {language_name} ({e})")
+            print(f"Skipping {lang_name} due to loading error: {e}")
+            continue
 
-    if not datasets_to_combine:
-        raise ValueError(f"No datasets available for language: {language_name}")
+    if not dataset_list:
+        raise ValueError("No language datasets could be loaded successfully.")
 
-    combined_dataset = concatenate_datasets(datasets_to_combine)
-
-    # 3. Optional: Subsample if the dataset is massive (caps memory and speeds up training epochs)
-    if len(combined_dataset) > max_samples:
-        print(f"Capping {language_name} from {len(combined_dataset)} down to {max_samples} samples.")
-        combined_dataset = combined_dataset.select(range(max_samples))
-
-    print(f"Loaded {len(combined_dataset)} total samples for {language_name}.")
+    combined_dataset = concatenate_datasets(dataset_list)
     return combined_dataset
 
 
 class UnifiedSpeechDataset(TorchDataset):
-    def __init__(self, hf_dataset: Dataset, processor, sampling_rate: int = 16000):
+    def __init__(self, hf_dataset, processor=None, sampling_rate: int = 16000):
         self.dataset = hf_dataset
         self.processor = processor
         self.sampling_rate = sampling_rate
@@ -139,40 +142,4 @@ class UnifiedSpeechDataset(TorchDataset):
         return len(self.dataset)
 
     def __getitem__(self, idx: int) -> dict:
-        item = self.dataset[idx]
-
-        audio_data = item["audio"]
-        if isinstance(audio_data, dict) and "path" in audio_data:
-            speech_array, sr = torchaudio.load(audio_data["path"])
-        elif isinstance(audio_data, str):
-            speech_array, sr = torchaudio.load(audio_data)
-        else:
-            speech_array = torch.tensor(audio_data["array"], dtype=torch.float32)
-            sr = audio_data["sampling_rate"]
-
-        if sr != self.sampling_rate:
-            resampler = torchaudio.transforms.Resample(orig_freq=sr, new_freq=self.sampling_rate)
-            speech_array = resampler(speech_array)
-
-        if speech_array.shape[0] > 1:
-            speech_array = torch.mean(speech_array, dim=0, keepdim=True)
-
-        input_features = self.processor(
-            speech_array.squeeze().numpy(),
-            sampling_rate=self.sampling_rate,
-            return_tensors="pt"
-        ).input_features[0]
-
-        labels = self.processor.tokenizer(item["transcription"]).input_ids
-
-        return {
-            "input_features": input_features,
-            "labels": torch.tensor(labels, dtype=torch.long),
-            "source": item["source"]
-        }
-
-
-if __name__ == "__main__":
-    combined_ds = load_all_speech_data(split="train")
-    print("Sample 0 Source:", combined_ds[0]["source"])
-    print("Sample -1 Source:", combined_ds[-1]["source"])
+        return self.dataset[idx]
