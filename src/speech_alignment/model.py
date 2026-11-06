@@ -179,7 +179,6 @@ class Forced_Aligner:
         if not audio_arrays:
             return None
 
-        # Format inputs using chat template so audio placeholder tokens are correctly inserted
         asr_chat_texts = [
             self.asr_processor.apply_chat_template(
                 [
@@ -344,7 +343,6 @@ class Forced_Aligner:
                 # --- STEP 2: Forced Alignment (Using Ground-Truth Text Anchors) ---
                 for i in range(len(audio_arrays)):
                     try:
-                        # Safe lookups with index validation
                         pred_text = predicted_texts[i].strip() if i < len(predicted_texts) else ""
                         ref_text = raw_refs[i].strip() if i < len(raw_refs) else ""
 
@@ -386,14 +384,18 @@ class Forced_Aligner:
                             print(f"Warning: Logits shape mismatch for sample {i} in batch {step}")
                             continue
 
+                        # Safely resolve timestamp token ID with fallback
+                        timestamp_token_id = getattr(self.aligner_model.config, "timestamp_token_id", None)
+                        if timestamp_token_id is None and hasattr(self.aligner_processor, "tokenizer"):
+                            timestamp_token_id = self.aligner_processor.tokenizer.convert_tokens_to_ids("<|notimestamp|>")
+
                         timestamps = self.aligner_processor.decode_forced_alignment(
                             logits=logits[0:1],
                             input_ids=aligner_inputs["input_ids"][0:1],
                             word_lists=[word_list],
-                            timestamp_token_id=self.aligner_model.config.timestamp_token_id
+                            timestamp_token_id=timestamp_token_id
                         )
 
-                        # Guard against empty decoding outputs or out-of-bounds indexing
                         if not timestamps or len(timestamps) == 0:
                             print(f"Warning: Empty alignment timestamps for sample {i} in batch {step}")
                             continue
