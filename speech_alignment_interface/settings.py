@@ -14,8 +14,9 @@ import os
 from pathlib import Path
 
 from dotenv import load_dotenv
+from pathlib import Path
 
-load_dotenv()
+load_dotenv(Path(__file__).resolve().parent / ".env", override=True)
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -26,10 +27,10 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 
 # SECURITY WARNING: keep the secret key used in production secret!
 SECRET_KEY = os.getenv("SECRET_KEY", "django-insecure-key-for-dev")
-DATABASE_PASSWORD = str(os.getenv("DATABASE"))
-USER = str(os.getenv("USER"))
-HOST=str(os.getenv("HOST"))
-PORT = int(str(os.getenv("PORT")))
+DATABASE_PASSWORD = os.getenv("DATABASE")
+DB_USER = os.getenv("USER")
+DB_HOST = os.getenv("HOST", "localhost")
+DB_PORT = int(os.getenv("PORT", "5433"))
 
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
@@ -89,13 +90,12 @@ DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.postgresql',
         'NAME': 'forced-aligner-proj',
-        'USER': USER,
+        'USER': DB_USER,
         'PASSWORD': DATABASE_PASSWORD,
-        'HOST': HOST,
-        'PORT': PORT,
+        'HOST': DB_HOST,
+        'PORT': DB_PORT,
     }
 }
-
 
 # Password validation
 # https://docs.djangoproject.com/en/6.1/ref/settings/#auth-password-validators

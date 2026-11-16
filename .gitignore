@@ -1,1 +1,14 @@
 .env
+
+# Python cache files
+__pycache__/
+*.py[cod]
+
+# macOS metadata
+.DS_Store
+
+# Generated audio and alignment outputs
+data/in/
+data/out/
+*.wav
+*.TextGrid

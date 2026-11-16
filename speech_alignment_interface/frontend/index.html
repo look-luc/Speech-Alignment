@@ -1,39 +1,50 @@
 {% load static %}
 <!doctype html>
 <html lang="en">
-    <head>
-        <meta charset="UTF-8" />
-        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-        <title>Low Forced Qwingual</title>
-        <link
-            href="{% static 'index.css' %}"
-            rel="stylesheet"
-            type="text/css"
-        />
-        <script type="module" src="{% static 'index.js' %}"></script>
-    </head>
-    <body>
-        <div class="title">
-            <hgroup>
-                <h1>Welcome to Low Forced Qwingual</h1>
-                <h2>
-                    A multilingual forced aligner trained on low to mid
-                    resourced languages
-                </h2>
-            </hgroup>
-        </div>
-        <div class="audio-upload-container">
-            <label for="audio-upload" class="upload-dropzone">
-                <span class="upload-icon">Your audio file</span>
-                <span class="upload-text"
-                    >Drag & drop your audio file here, or
-                    <strong>browse</strong></span
-                >
-                <span class="file-info" id="file-name">No file selected</span>
-            </label>
-            <input type="file" id="audio-upload" accept="audio/*" hidden />
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Low Forced Qwingual</title>
+    <link href="{% static 'index.css' %}" rel="stylesheet" />
+    <script type="module" src="{% static 'index.js' %}"></script>
+</head>
+<body>
+    <div class="title">
+        <hgroup>
+            <h1>Welcome to Low Forced Qwingual</h1>
+            <h2>A multilingual forced aligner trained on low to mid resourced languages</h2>
+        </hgroup>
+    </div>
 
-            <audio id="audio-preview" controls style="display: none"></audio>
+    <main class="audio-upload-container">
+        <label for="audio-upload" class="upload-dropzone">
+            <span class="upload-icon">Your audio file</span>
+            <span class="upload-text">Drag & drop your audio file here, or <strong>browse</strong></span>
+            <span class="file-info" id="file-name">No file selected</span>
+        </label>
+
+        <input type="file" id="audio-upload" accept="audio/*" hidden />
+
+        <audio id="audio-preview" controls style="display: none"></audio>
+
+        <div>
+            <label for="transcript">Transcript (optional)</label>
+            <textarea
+                id="transcript"
+                placeholder="Enter a transcript, or leave blank to generate one automatically using speech recognition..."
+                rows="5"
+            ></textarea>
         </div>
-    </body>
+
+        <div>
+            <label for="language">Language</label>
+            <input id="language" type="text" value="en" placeholder="e.g. en" />
+        </div>
+
+        <button id="upload-button" type="button">Upload and align</button>
+
+        <p id="status"></p>
+        <div id="results"></div>
+    </main>
+</body>
 </html>
