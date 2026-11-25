@@ -1,6 +1,8 @@
 # Multilingual Force Aligner
 ## How to run
-### Docker
+### Database
 ```bash
-
+cd database
+make build build
+make run
 ```
